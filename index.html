@@ -249,6 +249,18 @@ padding:10px 14px;font-size:13.5px;box-shadow:0 6px 20px rgba(0,0,0,.45);text-al
     </div>
 
     <div class="sect">
+      <h3>Diagnostics</h3>
+      <div id="diag"></div>
+      <div class="row" style="margin-top:9px">
+        <button id="refreshdiag">Refresh</button>
+        <button id="copydiag">Copy report</button>
+      </div>
+      <p class="hint">If a room is not working, open this while joined. "connected" with
+      events received means the relay is fine; a rejection message tells you it refused the
+      event, usually for size or spam reasons.</p>
+    </div>
+
+    <div class="sect">
       <h3>App</h3>
       <div class="row">
         <button id="installbtn">Install app</button>

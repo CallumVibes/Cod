@@ -205,11 +205,33 @@ var NostrLite = (function () {
     this.socks = {};
     this.onevent = (opts && opts.onevent) || function () {};
     this.onstatus = (opts && opts.onstatus) || function () {};
-    this.filters = null;
-    this.subId = 'sb' + Math.random().toString(36).slice(2, 8);
+    this.onnotice = (opts && opts.onnotice) || function () {};
+    this.subs = {};                 // name -> filters
+    this.tag = Math.random().toString(36).slice(2, 7);
     this.closed = false;
-    this.queue = [];
+    this.stats = {};                // url -> {sent, ok, rejected, recv, err}
   }
+
+  Pool.prototype._stat = function (url) {
+    if (!this.stats[url]) {
+      this.stats[url] = { sent: 0, ok: 0, rejected: 0, recv: 0, err: '' };
+    }
+    return this.stats[url];
+  };
+  Pool.prototype.report = function () {
+    var self = this;
+    return this.urls.map(function (u) {
+      var r = self.socks[u], s = self._stat(u);
+      var state = !r ? 'idle'
+        : r.ws.readyState === 0 ? 'connecting'
+        : r.ws.readyState === 1 ? 'connected'
+        : 'closed';
+      return {
+        url: u, state: state, sent: s.sent, ok: s.ok,
+        rejected: s.rejected, recv: s.recv, err: s.err
+      };
+    });
+  };
 
   Pool.prototype.connect = function () {
     var self = this;
@@ -230,14 +252,35 @@ var NostrLite = (function () {
     ws.onopen = function () {
       rec.ok = true;
       rec.tries = 0;
+      self._stat(url).err = '';
       self.onstatus(self.status());
-      if (self.filters) ws.send(JSON.stringify(['REQ', self.subId].concat(self.filters)));
-      self.queue.forEach(function (m) { try { ws.send(m); } catch (e) {} });
+      Object.keys(self.subs).forEach(function (name) {
+        try {
+          ws.send(JSON.stringify(['REQ', self.tag + name].concat(self.subs[name])));
+        } catch (e) {}
+      });
     };
     ws.onmessage = function (m) {
       var d;
       try { d = JSON.parse(m.data); } catch (e) { return; }
-      if (d[0] === 'EVENT' && d[2]) self.onevent(d[2], url);
+      var st = self._stat(url);
+      if (d[0] === 'EVENT' && d[2]) { st.recv++; self.onevent(d[2], url); return; }
+      if (d[0] === 'OK') {
+        if (d[2]) st.ok++;
+        else { st.rejected++; st.err = String(d[3] || 'rejected').slice(0, 90); self.onstatus(self.status()); }
+        return;
+      }
+      if (d[0] === 'CLOSED') {
+        st.err = 'sub closed: ' + String(d[2] || '').slice(0, 80);
+        self.onnotice(url, st.err);
+        self.onstatus(self.status());
+        return;
+      }
+      if (d[0] === 'NOTICE') {
+        st.err = String(d[1] || '').slice(0, 90);
+        self.onnotice(url, st.err);
+        self.onstatus(self.status());
+      }
     };
     ws.onclose = function () {
       rec.ok = false;
@@ -259,9 +302,11 @@ var NostrLite = (function () {
     return { up: up, total: total };
   };
 
-  Pool.prototype.sub = function (filters) {
-    this.filters = filters;
-    var msg = JSON.stringify(['REQ', this.subId].concat(filters)), self = this;
+  /* Each subscription goes out as its own REQ. Relays cap how big a single
+     filter may be, and one oversized REQ can take the whole socket down. */
+  Pool.prototype.sub = function (name, filters) {
+    this.subs[name] = filters;
+    var msg = JSON.stringify(['REQ', this.tag + name].concat(filters)), self = this;
     this.urls.forEach(function (u) {
       var r = self.socks[u];
       if (r && r.ws.readyState === 1) { try { r.ws.send(msg); } catch (e) {} }
@@ -272,7 +317,9 @@ var NostrLite = (function () {
     var msg = JSON.stringify(['EVENT', ev]), sent = 0, self = this;
     this.urls.forEach(function (u) {
       var r = self.socks[u];
-      if (r && r.ws.readyState === 1) { try { r.ws.send(msg); sent++; } catch (e) {} }
+      if (r && r.ws.readyState === 1) {
+        try { r.ws.send(msg); self._stat(u).sent++; sent++; } catch (e) {}
+      }
     });
     return sent;
   };
