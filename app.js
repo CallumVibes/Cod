@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '1.6';
+  var VERSION = '1.7';
   /* Write-friendly public relays. relay.nostr.band is a search aggregator and
      nostr.wine is paid, so neither accepts writes from a fresh key. */
   var DEFAULT_RELAYS = [
@@ -724,10 +724,23 @@
     chain.then(function () {
       S.busy = false;
       if (!first) return;
+      S.undo.length = 0; S.redo.length = 0;
+
+      if (S.room) {
+        /* Adding a map mid-room means you want the team on it: land on the
+           live setup and push it out, rather than dropping onto a private one. */
+        S.objUrl = null;
+        useMapForRoom(first);
+        S.mapSent = false;
+        publishMap(true);
+        fitView(); refresh(); renderMapList(); syncUndoButtons();
+        toast('Map added — sending to the room');
+        return;
+      }
+
       S.mapId = first.id;
       var bl = boardsOf(first.id);
       S.boardId = (bl.length ? bl[0] : newBoard(first.id, 'Default')).id;
-      S.undo.length = 0; S.redo.length = 0;
       fitView(); refresh(); renderMapList(); syncUndoButtons();
       toast(list.length > 1 ? list.length + ' maps added' : 'Map added');
     });
@@ -899,7 +912,19 @@
   }
   function roomTag() { return 'stratboard:' + S.room; }
   function mapMetaTag() { return roomTag() + ':map'; }
-  function mapChunkTag(i) { return roomTag() + ':map:' + i; }
+  /* Chunk addresses carry a per-image id. Without it a second map reuses the
+     first one's addresses, and a receiver reassembles a mixture of the two. */
+  function mapChunkTag(xid, i) { return roomTag() + ':m:' + xid + ':' + i; }
+
+  /* Cheap content hash (FNV-1a) — identifies an image and checks it arrived whole. */
+  function hashStr(s) {
+    var h = 0x811c9dc5;
+    for (var i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+    }
+    return h.toString(16);
+  }
 
   /* Re-encode the current map a little smaller, just for sending over relays. */
   function shareImage(m) {
@@ -932,12 +957,14 @@
         banner('This map is too big to send over a room. Share a map pack instead.');
         return;
       }
+      var xid = hashStr(im.b64);
       var meta = {
-        name: m.name, n: parts.length, type: 'image/jpeg',
+        name: m.name, n: parts.length, type: 'image/jpeg', xid: xid,
+        len: im.b64.length, sum: xid,
         pxw: im.w, pxh: im.h, h: Math.round(MAPW * im.h / im.w)
       };
       var jobs = [{ d: mapMetaTag(), body: JSON.stringify(meta) }];
-      parts.forEach(function (p, i) { jobs.push({ d: mapChunkTag(i), body: p }); });
+      parts.forEach(function (p, i) { jobs.push({ d: mapChunkTag(xid, i), body: p }); });
 
       // stagger slightly so relays do not treat the burst as flooding
       jobs.reduce(function (pr, job, i) {
@@ -1005,15 +1032,50 @@
 
     var b64 = '';
     for (var j = 0; j < rx.meta.n; j++) b64 += rx.chunks[j];
+
+    /* Verify before trusting it. A mismatch means parts from another image or
+       a truncated part, which would otherwise render as a torn, garish mess. */
+    if ((rx.meta.len && b64.length !== rx.meta.len) ||
+        (rx.meta.sum && hashStr(b64) !== rx.meta.sum)) {
+      S.mapRx = { meta: null, chunks: {} };
+      banner('Map arrived damaged — asking for it again.');
+      setTimeout(askForMap, 900);
+      return;
+    }
+
     var buf;
     try { buf = bufFromB64(b64); } catch (e) { return; }
 
-    var existing = haveMapNamed(rx.meta.name);
-    if (existing) { S.mapRx = { meta: null, chunks: {} }; useMapForRoom(existing); return; }
+    var meta = rx.meta;
+    var existing = haveMapNamed(meta.name);
+    if (existing && (existing.rxid === undefined || existing.rxid === meta.xid)) {
+      S.mapRx = { meta: null, chunks: {} };
+      useMapForRoom(existing);
+      return;
+    }
+    if (existing) {
+      /* Same name, different image — replace it in place so a damaged copy
+         from an earlier transfer gets repaired instead of lingering. */
+      if (existing._url) { try { URL.revokeObjectURL(existing._url); } catch (e) {} }
+      existing.buf = buf;
+      existing.pxw = meta.pxw; existing.pxh = meta.pxh;
+      existing.h = meta.h || MAPW;
+      existing.rxid = meta.xid;
+      existing._url = '';
+      attachUrl(existing);
+      S.mapRx = { meta: null, chunks: {} };
+      S.objUrl = null;
+      useMapForRoom(existing);
+      banner('');
+      toast('Map updated: ' + existing.name);
+      dbPut('maps', existing).catch(function () {});
+      return;
+    }
 
     var rec = {
-      id: uid(), name: rx.meta.name || 'Room map', buf: buf, type: 'image/jpeg',
-      pxw: rx.meta.pxw, pxh: rx.meta.pxh, h: rx.meta.h || MAPW, created: Date.now()
+      id: uid(), name: meta.name || 'Room map', buf: buf, type: 'image/jpeg',
+      pxw: meta.pxw, pxh: meta.pxh, h: meta.h || MAPW,
+      rxid: meta.xid, created: Date.now()
     };
     S.mapRx = { meta: null, chunks: {} };
 
@@ -1102,11 +1164,16 @@
         var meta;
         try { meta = JSON.parse(ev.content); } catch (e) { return; }
         if (!meta || !meta.n) return;
-        var mine = curMap();
-        if (mine && mine.name === meta.name) return;
+        /* A local map of our own always wins. A previously received one only
+           matches if it is the same image — otherwise it is stale or damaged
+           and we fetch it again. */
         var known = haveMapNamed(meta.name);
-        if (known) { useMapForRoom(known); return; }
-        if (!S.mapRx.meta || S.mapRx.meta.name !== meta.name) S.mapRx = { meta: meta, chunks: {} };
+        if (known && (known.rxid === undefined || known.rxid === meta.xid)) {
+          if (curMap() !== known) useMapForRoom(known);
+          return;
+        }
+        if (!meta.xid) { banner('Sender is on an older version — ask them to update.'); return; }
+        if (!S.mapRx.meta || S.mapRx.meta.xid !== meta.xid) S.mapRx = { meta: meta, chunks: {} };
         else S.mapRx.meta = meta;
         banner('Getting "' + meta.name + '" from the room…');
 
@@ -1116,7 +1183,9 @@
           var total = Math.min(meta.n, MAX_CHUNKS), BATCH = 12;
           for (var from = 0; from < total; from += BATCH) {
             var want = [];
-            for (var ci = from; ci < Math.min(from + BATCH, total); ci++) want.push(mapChunkTag(ci));
+            for (var ci = from; ci < Math.min(from + BATCH, total); ci++) {
+              want.push(mapChunkTag(meta.xid, ci));
+            }
             S.pool.sub('mapdata' + from, [{ kinds: [30078], authors: [S.roomPub], '#d': want }]);
           }
         }
@@ -1124,9 +1193,13 @@
         tryAssembleMap();
         return;
       }
-      if (d.indexOf(roomTag() + ':map:') === 0) {
-        if (curMap() && !S.mapRx.meta) return;
-        var idx = parseInt(d.slice((roomTag() + ':map:').length), 10);
+      if (d.indexOf(roomTag() + ':m:') === 0) {
+        if (!S.mapRx.meta) return;
+        var rest = d.slice((roomTag() + ':m:').length);
+        var cut = rest.lastIndexOf(':');
+        if (cut < 0) return;
+        if (rest.slice(0, cut) !== S.mapRx.meta.xid) return;   // part of another image
+        var idx = parseInt(rest.slice(cut + 1), 10);
         if (isNaN(idx)) return;
         S.mapRx.chunks[idx] = ev.content;
         if (S.mapRx.meta) {
@@ -1817,6 +1890,9 @@
   window.__stratboard = function () {
     return {
       version: VERSION, room: S.room, maps: S.maps.length,
+      mapList: S.maps.map(function (m) {
+        return { name: m.name, bytes: m.buf ? m.buf.byteLength : 0, px: m.pxw + 'x' + m.pxh, rxid: m.rxid || null };
+      }),
       mapId: S.mapId, boardId: S.boardId,
       rxMeta: S.mapRx.meta, rxParts: Object.keys(S.mapRx.chunks).length,
       pendingState: !!S.pendingState,
