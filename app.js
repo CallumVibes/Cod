@@ -2,15 +2,18 @@
 (function () {
   'use strict';
 
-  var VERSION = '1.4';
+  var VERSION = '1.6';
   /* Write-friendly public relays. relay.nostr.band is a search aggregator and
      nostr.wine is paid, so neither accepts writes from a fresh key. */
   var DEFAULT_RELAYS = [
     'wss://relay.damus.io',
     'wss://nos.lol',
     'wss://relay.primal.net',
-    'wss://nostr.mom'
+    'wss://nostr.mom',
+    'wss://offchain.pub'
   ];
+  /* Known not to take writes from a fresh key: paid, or search-only. */
+  var BAD_RELAYS = ['nostr.wine', 'relay.nostr.band', 'filter.nostr.wine', 'purplepag.es'];
   var MAX_PX = 1600;         // longest edge kept for stored map images
   var SEND_MS = 350;         // live broadcast throttle while dragging
   var CHUNK = 14000;         // base64 chars per event — relays commonly cap at 32-64 KB
@@ -1013,13 +1016,16 @@
       pxw: rx.meta.pxw, pxh: rx.meta.pxh, h: rx.meta.h || MAPW, created: Date.now()
     };
     S.mapRx = { meta: null, chunks: {} };
-    dbPut('maps', rec).then(function () {
-      attachUrl(rec);
-      S.maps.push(rec);
-      useMapForRoom(rec);
-      banner('');
-      toast('Map received: ' + rec.name);
-    });
+
+    /* Register it synchronously. Waiting on the database let a second copy of
+       the same transfer assemble alongside this one and land as a duplicate,
+       which then opened a fresh live board and discarded the synced state. */
+    attachUrl(rec);
+    S.maps.push(rec);
+    useMapForRoom(rec);
+    banner('');
+    toast('Map received: ' + rec.name);
+    dbPut('maps', rec).catch(function () { toast('Map received but could not be saved'); });
   }
 
   function roomPayload() {
@@ -1190,7 +1196,23 @@
     if (changed) renderMembers();
   }
 
+  function renderRoomState() {
+    var el = $('roomstate');
+    if (!el) return;
+    if (!S.room) {
+      el.textContent = 'Not in a room';
+      el.className = 'pill';
+      return;
+    }
+    var n = Object.keys(S.members).length;
+    var st = S.pool ? S.pool.status() : { up: 0, total: 0 };
+    el.textContent = 'In "' + S.room + '" · ' + (n ? n + ' other' + (n === 1 ? '' : 's') : 'on your own') +
+                     ' · ' + st.up + '/' + st.total + ' relays';
+    el.className = 'pill' + (st.up ? ' ok' : '');
+  }
+
   function renderMembers() {
+    renderRoomState();
     var n = Object.keys(S.members).length;
     var btn = $('livebtn');
     if (S.room) {
@@ -1240,10 +1262,13 @@
     }
     if (!S.pool) { out.push('not connected to any relay'); return out; }
     S.pool.report().forEach(function (r) {
-      out.push('• ' + r.url.replace(/^wss?:\/\//, ''));
+      out.push('• ' + r.url.replace(/^wss?:\/\//, '') + (r.authed ? ' [authed]' : ''));
       out.push('    ' + r.state + ' — sent ' + r.sent + ', accepted ' + r.ok +
                ', rejected ' + r.rejected + ', received ' + r.recv);
       if (r.err) out.push('    says: ' + r.err);
+      if (r.state === 'connected' && r.sent > 0 && r.ok === 0 && r.rejected === 0 && !r.authed) {
+        out.push('    (took events but never acknowledged any)');
+      }
     });
     return out;
   }
@@ -1283,6 +1308,21 @@
       S.roomPub = NostrLite.bytesToHex(NostrLite.pubkeyFromSeckey(sk));
       S.pool = new NostrLite.Pool(S.relays, {
         onevent: onEvent,
+        /* NIP-42 challenge: sign it with the room key so write-gated
+           relays will take our events. */
+        authSign: function (url, challenge) {
+          return NostrLite.finalize({
+            kind: 22242,
+            tags: [['relay', url], ['challenge', challenge]],
+            content: ''
+          }, S.roomSk);
+        },
+        onauth: function () {
+          sendBeat();
+          if (curMap()) { sendNow(); S.mapSent = false; publishMap(); }
+          else askForMap();
+          renderDiag();
+        },
         onstatus: function () { renderMembers(); renderDiag(); },
         onnotice: function (url, msg) {
           S.notices.push(url.replace(/^wss?:\/\//, '') + ': ' + msg);
@@ -1532,7 +1572,7 @@
                  words[Math.floor(Math.random() * words.length)] + '-' +
                  Math.floor(1000 + Math.random() * 9000);
       $('roomcode').value = code;
-      toast('Code ready — press Join');
+      joinRoom(code);          // making a room and joining one are the same act
     });
     $('sharroom').addEventListener('click', function () {
       var code = $('roomcode').value.trim();
@@ -1548,8 +1588,21 @@
     });
     $('leaveroom').addEventListener('click', function () { leaveRoom(); });
     $('sendmap').addEventListener('click', function () {
-      if (!S.room || !S.pool) { toast('Join a room first'); return; }
       if (!curMap()) { toast('No map to send'); return; }
+      if (!S.room || !S.pool) {
+        var typed = $('roomcode').value.trim();
+        if (!typed) { toast('Type a room code first'); return; }
+        ask({
+          title: 'Start the room?',
+          body: 'You are not in "' + typed + '" yet. Start it and send the map?',
+          okText: 'Start and send'
+        }).then(function (r) {
+          if (r.action !== 'ok') return;
+          joinRoom(typed);
+          setTimeout(function () { publishMap(true); }, 2200);
+        });
+        return;
+      }
       toast('Sending map…');
       publishMap(true);
     });
@@ -1646,12 +1699,51 @@
     }).then(function (res) {
       S.maps = res[0].sort(function (a, b) { return a.created - b.created; });
       S.boards = res[1];
+
+      /* Clear up duplicate maps left by the transfer race: same name, same
+         image. Keep the oldest and move its setups across. */
+      var seen = {}, dupes = [];
+      S.maps.forEach(function (m) {
+        var key = m.name + '|' + (m.buf ? m.buf.byteLength : 0);
+        if (seen[key]) dupes.push({ dupe: m, keep: seen[key] });
+        else seen[key] = m;
+      });
+      dupes.forEach(function (d) {
+        S.boards.forEach(function (b) {
+          if (b.mapId !== d.dupe.id) return;
+          var clash = S.boards.some(function (o) {
+            return o.mapId === d.keep.id && o.name === b.name;
+          });
+          if (clash) { dbDel('boards', b.id); b._drop = true; return; }
+          b.mapId = d.keep.id;
+          dbPut('boards', b);
+        });
+        dbDel('maps', d.dupe.id);
+        S.maps = S.maps.filter(function (x) { return x.id !== d.dupe.id; });
+      });
+      S.boards = S.boards.filter(function (b) { return !b._drop; });
+
       S.maps.forEach(attachUrl);
 
       var st = res[2];
+      var dropped = [];
       if (st) {
         S.nick = st.nick || '';
         S.relays = (st.relays && st.relays.length) ? st.relays : DEFAULT_RELAYS.slice();
+        /* Drop relays that refuse writes, and top the list back up. */
+        S.relays = S.relays.filter(function (u) {
+          var bad = BAD_RELAYS.some(function (b) { return u.indexOf(b) >= 0; });
+          if (bad) dropped.push(u.replace(/^wss?:\/\//, ''));
+          return !bad;
+        });
+        /* Only top the list up when we removed something — never second-guess
+           a list the user set deliberately. */
+        if (dropped.length && S.relays.length < 3) {
+          DEFAULT_RELAYS.forEach(function (u) {
+            if (S.relays.indexOf(u) < 0) S.relays.push(u);
+          });
+        }
+        if (!S.relays.length) S.relays = DEFAULT_RELAYS.slice();
         S.colour = st.colour || S.colour;
         S.clientId = st.clientId || S.clientId;
         if (st.mapId && S.maps.some(function (m) { return m.id === st.mapId; })) S.mapId = st.mapId;
@@ -1669,6 +1761,12 @@
       $('relays').value = S.relays.join('\n');
       $('menusub').textContent = 'Version ' + VERSION + ' · everything saves on this phone.';
       renderDiag();
+      if (dropped.length) {
+        saveMeta();
+        setTimeout(function () {
+          toast('Dropped ' + dropped.join(', ') + ' — they refuse writes');
+        }, 1400);
+      }
       var sws = document.querySelectorAll('.sw');
       for (var i = 0; i < sws.length; i++) {
         sws[i].setAttribute('aria-pressed', sws[i].getAttribute('data-col') === S.colour ? 'true' : 'false');
@@ -1714,6 +1812,18 @@
       }
     }, 400);
   }
+
+  /* Small read-only hook so a problem can be inspected from the console. */
+  window.__stratboard = function () {
+    return {
+      version: VERSION, room: S.room, maps: S.maps.length,
+      mapId: S.mapId, boardId: S.boardId,
+      rxMeta: S.mapRx.meta, rxParts: Object.keys(S.mapRx.chunks).length,
+      pendingState: !!S.pendingState,
+      subs: S.pool ? Object.keys(S.pool.subs) : [],
+      relays: S.pool ? S.pool.report() : []
+    };
+  };
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', boot);

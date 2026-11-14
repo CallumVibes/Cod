@@ -206,6 +206,8 @@ var NostrLite = (function () {
     this.onevent = (opts && opts.onevent) || function () {};
     this.onstatus = (opts && opts.onstatus) || function () {};
     this.onnotice = (opts && opts.onnotice) || function () {};
+    this.authSign = (opts && opts.authSign) || null;
+    this.onauth = (opts && opts.onauth) || function () {};
     this.subs = {};                 // name -> filters
     this.tag = Math.random().toString(36).slice(2, 7);
     this.closed = false;
@@ -228,7 +230,7 @@ var NostrLite = (function () {
         : 'closed';
       return {
         url: u, state: state, sent: s.sent, ok: s.ok,
-        rejected: s.rejected, recv: s.recv, err: s.err
+        rejected: s.rejected, recv: s.recv, err: s.err, authed: !!s.authed
       };
     });
   };
@@ -265,7 +267,34 @@ var NostrLite = (function () {
       try { d = JSON.parse(m.data); } catch (e) { return; }
       var st = self._stat(url);
       if (d[0] === 'EVENT' && d[2]) { st.recv++; self.onevent(d[2], url); return; }
+
+      /* NIP-42: relay wants us to prove we hold the key before it takes writes */
+      if (d[0] === 'AUTH' && d[1] && self.authSign) {
+        st.err = 'authenticating…';
+        self.onstatus(self.status());
+        self.authSign(url, d[1]).then(function (ev) {
+          rec.authId = ev.id;
+          try { ws.send(JSON.stringify(['AUTH', ev])); } catch (e) {}
+        }).catch(function () {});
+        return;
+      }
+
       if (d[0] === 'OK') {
+        if (rec.authId && d[1] === rec.authId) {
+          rec.authId = null;
+          if (d[2]) {
+            st.authed = true;
+            st.err = '';
+            Object.keys(self.subs).forEach(function (name) {
+              try { ws.send(JSON.stringify(['REQ', self.tag + name].concat(self.subs[name]))); } catch (e) {}
+            });
+            self.onauth(url);
+          } else {
+            st.err = 'auth refused: ' + String(d[3] || '').slice(0, 70);
+          }
+          self.onstatus(self.status());
+          return;
+        }
         if (d[2]) st.ok++;
         else { st.rejected++; st.err = String(d[3] || 'rejected').slice(0, 90); self.onstatus(self.status()); }
         return;

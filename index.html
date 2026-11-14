@@ -221,12 +221,13 @@ padding:10px 14px;font-size:13.5px;box-shadow:0 6px 20px rgba(0,0,0,.45);text-al
       <div class="row">
         <input id="nick" placeholder="Your name" maxlength="14" autocomplete="off">
       </div>
+      <div id="roomstate" class="pill" style="margin:0 0 10px">Not in a room</div>
       <div class="row">
         <input id="roomcode" placeholder="Room code" maxlength="40" autocomplete="off" autocapitalize="none" spellcheck="false">
-        <button id="joinroom" class="pri" style="flex:none;padding:0 18px">Join</button>
+        <button id="joinroom" class="pri" style="flex:none;padding:0 16px">Start</button>
       </div>
       <div class="row">
-        <button id="randroom">Random</button>
+        <button id="randroom">New room</button>
         <button id="sharroom">Invite</button>
         <button id="leaveroom" class="danger">Leave</button>
       </div>
@@ -234,9 +235,10 @@ padding:10px 14px;font-size:13.5px;box-shadow:0 6px 20px rgba(0,0,0,.45);text-al
         <button id="sendmap">Send map to room</button>
       </div>
       <div id="members"></div>
-      <p class="hint">Anyone with the code sees your board change as you drag, and joining pulls
-      the map down automatically. Codes are the only password, so pick something your mates would
-      not guess — a shrunk copy of the map goes through the relays too.</p>
+      <p class="hint">Starting and joining are the same thing — there is no server, so whoever
+      types a code first makes the room and the rest follow. Anyone with the code sees your board
+      change as you drag, and gets the map automatically. The code is the only password, so pick
+      something your mates would not guess: a shrunk copy of the map goes through the relays too.</p>
     </div>
 
     <div class="sect">
