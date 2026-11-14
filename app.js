@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2.4';
+  var VERSION = '2.5';
   /* Write-friendly public relays. relay.nostr.band is a search aggregator and
      nostr.wine is paid, so neither accepts writes from a fresh key. */
   var DEFAULT_RELAYS = [
@@ -452,6 +452,9 @@
   function stageDown(e) {
     var m = curMap();
     if (!m) return;
+    /* The floating controls sit inside the board, so their taps bubble here.
+       Without this, pressing Undo with the Mark tool active dropped a mark. */
+    if (e.target.closest && e.target.closest('#float, #banner, #blank')) return;
     ptrs[e.pointerId] = { x: e.clientX, y: e.clientY };
     var n = Object.keys(ptrs).length;
 
@@ -502,8 +505,16 @@
       } else {
         gest = {
           type: 'pan', c0: { x: e.clientX, y: e.clientY },
-          view0: { x: S.view.x, y: S.view.y, w: S.view.w, h: S.view.h }
+          view0: { x: S.view.x, y: S.view.y, w: S.view.w, h: S.view.h },
+          at: p, moved: false
         };
+        clearTimeout(S.holdTimer);
+        S.holdTimer = setTimeout(function () {
+          if (gest && gest.type === 'pan' && !gest.moved) {
+            gest = { type: 'none' };
+            sendPing(p);
+          }
+        }, 480);
       }
       return;
     }
@@ -514,6 +525,12 @@
       curBoard().arrows.push(ar);
       gest = { type: 'draw', arrow: ar };
       render();
+      return;
+    }
+
+    if (S.tool === 'ping') {
+      sendPing(p);
+      gest = { type: 'none' };
       return;
     }
 
@@ -564,6 +581,10 @@
       var m2 = $('board').getScreenCTM();
       if (!m2) return;
       var dx = (e.clientX - gest.c0.x) / m2.a, dy = (e.clientY - gest.c0.y) / m2.d;
+      if (!gest.moved && Math.abs(e.clientX - gest.c0.x) + Math.abs(e.clientY - gest.c0.y) > 8) {
+        gest.moved = true;
+        clearTimeout(S.holdTimer);
+      }
       setView({ x: gest.view0.x - dx, y: gest.view0.y - dy, w: gest.view0.w, h: gest.view0.h });
       return;
     }
@@ -602,6 +623,7 @@
   }
 
   function stageUp(e) {
+    clearTimeout(S.holdTimer);
     delete ptrs[e.pointerId];
     var remaining = Object.keys(ptrs).length;
     if (!gest) return;
@@ -1054,6 +1076,60 @@
     }).catch(function () { S.mapSent = false; });
   }
 
+  /* Pings: a transient "look here" that every phone in the room sees for a
+     couple of seconds. Deliberately not part of the board, so pointing at
+     something never edits the plan. */
+  var PING_COLOURS = ['#f5b708', '#22c55e', '#e9ebef', '#a855f7', '#38bdf8'];
+  function colourFor(id) {
+    var h = 0;
+    for (var i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+    return PING_COLOURS[h % PING_COLOURS.length];
+  }
+
+  function showPing(x, y, name, colour) {
+    var g = svgEl('g', {});
+    var r0 = clamp(S.view.w / 26, 10, 46);
+    var ring = svgEl('circle', {
+      cx: x, cy: y, r: r0 * 0.35, fill: 'none',
+      stroke: colour, 'stroke-width': r0 / 5
+    });
+    var a1 = svgEl('animate', {
+      attributeName: 'r', from: r0 * 0.35, to: r0 * 1.5, dur: '1.1s',
+      repeatCount: '2', fill: 'freeze'
+    });
+    var a2 = svgEl('animate', {
+      attributeName: 'opacity', from: '1', to: '0', dur: '1.1s',
+      repeatCount: '2', fill: 'freeze'
+    });
+    ring.appendChild(a1); ring.appendChild(a2);
+    var dot = svgEl('circle', { cx: x, cy: y, r: r0 * 0.22, fill: colour });
+    g.appendChild(ring); g.appendChild(dot);
+    if (name) {
+      var t = svgEl('text', {
+        x: x, y: y - r0 * 0.75, 'text-anchor': 'middle',
+        'font-size': r0 * 0.62, 'font-weight': '600', fill: colour,
+        stroke: '#0a0c10', 'stroke-width': r0 / 9, 'paint-order': 'stroke'
+      });
+      t.textContent = name;
+      g.appendChild(t);
+    }
+    $('gPings').appendChild(g);
+    setTimeout(function () { if (g.parentNode) g.parentNode.removeChild(g); }, 2400);
+  }
+
+  function sendPing(p) {
+    var m = curMap();
+    showPing(p.x, p.y, S.nick || 'You', colourFor(S.clientId));
+    if (!S.pool || !S.roomSk) return;
+    NostrLite.finalize({
+      kind: 20003, tags: [['d', roomTag()]],
+      content: JSON.stringify({
+        c: S.clientId, n: S.nick || 'Player',
+        x: Math.round(p.x), y: Math.round(p.y), map: m ? m.name : ''
+      })
+    }, S.roomSk).then(function (ev) { if (S.pool) S.pool.publish(ev); }).catch(function () {});
+  }
+
   function askForMap() {
     if (!S.pool || !S.roomSk) return;
     NostrLite.finalize({
@@ -1301,6 +1377,15 @@
     var data;
     try { data = JSON.parse(ev.content); } catch (e) { return; }
 
+    if (ev.kind === 20003) {
+      if (!data.c || data.c === S.clientId) return;
+      var m = curMap();
+      if (data.map && m && data.map !== m.name) return;   // pointing at another map
+      S.members[data.c] = { n: data.n || 'Player', t: Date.now() };
+      showPing(data.x, data.y, data.n || 'Player', colourFor(data.c));
+      renderMembers();
+      return;
+    }
     if (ev.kind === 20002) {
       if (!data.c || data.c === S.clientId) return;
       if (curMap()) publishMap(true);
@@ -1529,7 +1614,7 @@
          refuses an oversized filter would otherwise kill the lot. */
       S.pool.sub('state', [{ kinds: [30078], authors: [S.roomPub], '#d': [roomTag()], limit: 1 }]);
       S.pool.sub('live', [{
-        kinds: [20001, 20002], authors: [S.roomPub],
+        kinds: [20001, 20002, 20003], authors: [S.roomPub],
         since: Math.floor(Date.now() / 1000) - 60
       }]);
       S.pool.sub('mapmeta', [{ kinds: [30078], authors: [S.roomPub], '#d': [mapMetaTag()] }]);
@@ -1584,6 +1669,11 @@
       btns[i].setAttribute('aria-pressed', btns[i].getAttribute('data-tool') === t ? 'true' : 'false');
     }
     var sw = $('swatch');
+    if (t === 'ping') {
+      sw.classList.remove('show');
+      banner('Tap the map to ping. You can also hold the map in Move.');
+      return;
+    }
     if (t === 'arrow' || t === 'mark' || t === 'text') {
       sw.classList.add('show');
       $('swlab').textContent = t === 'arrow' ? 'Arrow colour' : t === 'mark' ? 'Mark colour' : 'Text colour';
@@ -1632,6 +1722,18 @@
     $('undo').addEventListener('click', doUndo);
     $('redo').addEventListener('click', doRedo);
     $('fit').addEventListener('click', function () { fitView(); render(); });
+    $('wipe').addEventListener('click', function () {
+      var b = curBoard();
+      if (!b) return;
+      if (!b.arrows.length && !b.marks.length && !b.labels.length) {
+        toast('Nothing drawn to clear');
+        return;
+      }
+      snapshot();
+      b.arrows = []; b.marks = []; b.labels = [];
+      render(); saveBoard();
+      toast('Drawing cleared — undo is top right');
+    });
 
     $('mapsel').addEventListener('change', function () {
       if (!this.value) return;

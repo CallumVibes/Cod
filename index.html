@@ -80,7 +80,7 @@ color:var(--dim);display:none}
 #swatch .wlab{font-size:12px;color:var(--faint);margin-left:auto}
 
 /* tools */
-#tools{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;padding:7px 8px;flex:none;
+#tools{display:grid;grid-template-columns:repeat(6,1fr);gap:5px;padding:7px 8px;flex:none;
 padding-bottom:calc(7px + env(safe-area-inset-bottom))}
 #tools button{flex-direction:column;gap:3px;height:54px;min-height:54px;padding:0;font-size:10.5px;color:var(--dim)}
 #tools button i{font-style:normal;font-size:19px;line-height:1}
@@ -152,6 +152,7 @@ padding:10px 14px;font-size:13.5px;box-shadow:0 6px 20px rgba(0,0,0,.45);text-al
         <g id="gMarks"></g>
         <g id="gLabels"></g>
         <g id="gTokens"></g>
+        <g id="gPings" style="pointer-events:none"></g>
       </g>
     </svg>
     <div id="banner"></div>
@@ -159,6 +160,7 @@ padding:10px 14px;font-size:13.5px;box-shadow:0 6px 20px rgba(0,0,0,.45);text-al
       <button id="undo" aria-label="Undo">&#8630;</button>
       <button id="redo" aria-label="Redo">&#8631;</button>
       <button id="fit" aria-label="Fit map to screen">&#9744;</button>
+      <button id="wipe" aria-label="Clear drawing">&#10005;</button>
     </div>
     <div id="blank">
       <h2>No map yet</h2>
@@ -169,6 +171,7 @@ padding:10px 14px;font-size:13.5px;box-shadow:0 6px 20px rgba(0,0,0,.45);text-al
 
   <div id="tools">
     <button data-tool="move" aria-pressed="true"><i>&#9673;</i>Move</button>
+    <button data-tool="ping" aria-pressed="false"><i>&#9678;</i>Ping</button>
     <button data-tool="arrow" aria-pressed="false"><i>&#10230;</i>Arrow</button>
     <button data-tool="mark" aria-pressed="false"><i>&#10006;</i>Mark</button>
     <button data-tool="text" aria-pressed="false"><i>T</i>Text</button>
