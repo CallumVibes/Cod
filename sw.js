@@ -1,4 +1,4 @@
-var CACHE = 'stratboard-v6';
+var CACHE = 'stratboard-v7';
 var ASSETS = [
   './',
   './index.html',
@@ -32,8 +32,24 @@ self.addEventListener('activate', function (e) {
   );
 });
 
-/* App shell: network first with a short leash, cache as the fallback, so an
-   update lands next launch but a dead connection never blocks startup. */
+/* Genuinely network first, with a 3.5s leash. Online, you always get the
+   current build on the very next open; offline, the cache answers instead. */
+function timed(promise, ms) {
+  return new Promise(function (res, rej) {
+    var settled = false;
+    var t = setTimeout(function () {
+      if (!settled) { settled = true; rej(new Error('timeout')); }
+    }, ms);
+    promise.then(function (v) {
+      if (settled) return;
+      settled = true; clearTimeout(t); res(v);
+    }, function (e) {
+      if (settled) return;
+      settled = true; clearTimeout(t); rej(e);
+    });
+  });
+}
+
 self.addEventListener('fetch', function (e) {
   var req = e.request;
   if (req.method !== 'GET') return;
@@ -42,18 +58,14 @@ self.addEventListener('fetch', function (e) {
 
   e.respondWith(
     caches.open(CACHE).then(function (cache) {
-      return cache.match(req, { ignoreSearch: true }).then(function (hit) {
-        var net = fetch(req).then(function (res) {
-          if (res && res.ok) cache.put(req, res.clone());
-          return res;
-        }).catch(function () { return null; });
-
-        if (hit) {
-          net.catch(function () {});
-          return hit;
-        }
-        return net.then(function (res) {
-          return res || cache.match('./index.html');
+      return timed(fetch(req), 3500).then(function (res) {
+        if (res && res.ok) cache.put(req, res.clone()).catch(function () {});
+        return res;
+      }).catch(function () {
+        return cache.match(req, { ignoreSearch: true }).then(function (hit) {
+          if (hit) return hit;
+          if (req.mode === 'navigate') return cache.match('./index.html');
+          return Response.error();
         });
       });
     })
