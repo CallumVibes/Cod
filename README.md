@@ -31,17 +31,28 @@ to show or hide hardpoints.
 
 ## Playing together
 
-1. One person opens the menu, taps **New room**, and a code appears.
-2. Tap **Invite** to send the link, or just read the code out.
-3. Everyone else types the same code and taps **Start**.
+First time you open it you get **Create a room** or **Join a room**.
+
+1. One person taps **Create a room** and gets a code.
+2. They share it — the invite link, or just read it out.
+3. Everyone else taps **Join a room** and types the code.
 
 From then on you all see the same board. Drag a player and it moves on
 everyone's screen. Change the map and the whole team follows.
 
 The room code is the only password, so pick something nobody would guess.
 
-**Private setups.** While in a room you are on a shared setup. Anything under
-*This setup* in the menu is yours alone and does not sync.
+## Setups
+
+A setup is one arrangement of players and drawings — "A site default",
+"B rush", and so on. Setups belong to the room, so everyone has the same
+list, and when one person switches setup the team switches with them. Adding,
+renaming and deleting carry across too.
+
+Each map has its own setups, so switching map keeps everything in place.
+
+Setups you make on your own are yours and stay out of the room. Join a room
+and you see the room's; leave and your own come back.
 
 ## Hardpoints
 

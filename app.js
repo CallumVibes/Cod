@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '3.0';
+  var VERSION = '3.1';
   /* Write-friendly public relays. relay.nostr.band is a search aggregator and
      nostr.wine is paid, so neither accepts writes from a fresh key. */
   var DEFAULT_RELAYS = [
@@ -192,8 +192,13 @@
     for (var i = 0; i < S.boards.length; i++) if (S.boards[i].id === S.boardId) return S.boards[i];
     return null;
   }
+  /* A setup belongs to the room it was made in. Solo setups (room '') are
+     yours; everything made in a room is shared with that room. */
   function boardsOf(mapId) {
-    return S.boards.filter(function (b) { return b.mapId === mapId; });
+    var scope = S.room || '';
+    return S.boards.filter(function (b) {
+      return b.mapId === mapId && (b.room || '') === scope;
+    });
   }
   function mapH() { var m = curMap(); return m ? m.h : MAPW; }
 
@@ -203,7 +208,8 @@
     if (m) h = m.h;
     var cy = h * 0.82, names = ['AR', 'Sub', 'Flex', 'Anch'];
     var b = {
-      id: uid(), mapId: mapId, name: name || ('Setup ' + (boardsOf(mapId).length + 1)),
+      id: uid(), mapId: mapId, room: S.room || '',
+      name: name || ('Setup ' + (boardsOf(mapId).length + 1)),
       tokens: names.map(function (n, k) {
         return { id: uid(), n: n, x: MAPW * (0.32 + k * 0.12), y: cy, team: 'b' };
       }),
@@ -505,11 +511,7 @@
   /* ---------- selects ---------- */
   function fillSelects() {
     var ms = $('mapsel'), bs = $('boardsel');
-    /* In a live room the setup is decided for you, so the picker just adds
-       noise to the bar — the live indicator takes its place instead. */
-    var inRoom = !!S.room;
-    bs.style.display = inRoom ? 'none' : '';
-    $('livebtn').style.flex = inRoom ? '1' : '';
+    bs.style.display = '';
     ms.textContent = '';
     if (!S.maps.length) {
       ms.appendChild(new Option('No maps', ''));
@@ -945,7 +947,8 @@
         useMapForRoom(first);
         S.roomMapName = first.name;
         S.mapSent = false;
-        sendNow();          // announce the map first, so peers accept what follows
+        publishRoomState();   // announce map and setups first
+        sendNow();
         publishMap(true);
         fitView(); refresh(); renderMapList(); syncUndoButtons();
         toast('Map added — sending to the room');
@@ -1137,8 +1140,6 @@
   }
 
   /* ---------- live room ---------- */
-  function liveBoardName() { return 'Live · ' + S.room; }
-
   function dTag(ev) {
     var t = (ev.tags || []).filter(function (x) { return x[0] === 'd'; })[0];
     return t ? t[1] : '';
@@ -1307,15 +1308,15 @@
   function useMapForRoom(m) {
     S.mapId = m.id;
     S.objUrl = null;
-    var live = null;
-    boardsOf(m.id).forEach(function (b) { if (b.name === liveBoardName()) live = b; });
-    S.boardId = (live || newBoard(m.id, liveBoardName())).id;
+    var list = boardsOf(m.id);
+    S.boardId = (list.length ? list[0] : newBoard(m.id, 'Default')).id;
     fitView();
     fillSelects();
     render();
     if (S.pendingState) {
-      applyRemote(S.pendingState);
+      var held2 = S.pendingState;
       S.pendingState = null;
+      reconcileSetups(held2);
     }
     renderMapList();
     saveMeta();
@@ -1402,22 +1403,46 @@
     dbPut('maps', rec).catch(function () { toast('Map received but could not be saved'); });
   }
 
-  function roomPayload() {
-    var b = curBoard(), m = curMap();
+  function boardTag(id) { return roomTag() + ':b:' + id; }
+
+  /* The room's shape: which map, which setup is open, and the setup list.
+     Each setup's contents travel separately so one board's arrows never
+     push the whole room over a relay's size limit. */
+  function roomStatePayload() {
+    var m = curMap();
     return JSON.stringify({
-      v: 1, by: S.clientId, n: S.nick || 'Player', seq: ++S.seq, map: m ? m.name : '',
-      name: b ? b.name : '', tokens: b ? b.tokens : [], arrows: b ? b.arrows : [],
-      marks: b ? b.marks : [], labels: b ? b.labels : []
+      v: 2, by: S.clientId, n: S.nick || 'Player', map: m ? m.name : '',
+      active: S.boardId,
+      setups: m ? boardsOf(m.id).map(function (b) { return { id: b.id, name: b.name }; }) : []
     });
   }
 
-  function isLiveBoard() {
+  function publishRoomState() {
+    if (!S.pool || !S.roomSk || !S.room) return;
+    NostrLite.finalize({
+      kind: 30078, tags: [['d', roomTag()]], content: roomStatePayload()
+    }, S.roomSk).then(function (ev) { if (S.pool) S.pool.publish(ev); }).catch(function () {});
+  }
+
+  function publishBoard(b) {
+    if (!S.pool || !S.roomSk || !S.room || !b) return;
+    if ((b.room || '') !== S.room) return;
+    NostrLite.finalize({
+      kind: 30078, tags: [['d', boardTag(b.id)]],
+      content: JSON.stringify({
+        by: S.clientId, id: b.id, name: b.name, tokens: b.tokens,
+        arrows: b.arrows, marks: b.marks, labels: b.labels
+      })
+    }, S.roomSk).then(function (ev) { if (S.pool) S.pool.publish(ev); }).catch(function () {});
+  }
+
+  function inRoomBoard() {
     var b = curBoard();
-    return !!(S.room && b && b.name === liveBoardName());
+    return !!(S.room && b && (b.room || '') === S.room);
   }
 
   function queueSend() {
-    if (!S.pool || !isLiveBoard()) return;
+    if (!S.pool || !inRoomBoard()) return;
     if (S.sendTimer) return;
     var wait = Math.max(0, SEND_MS - (Date.now() - S.lastSend));
     S.sendTimer = setTimeout(function () {
@@ -1428,16 +1453,20 @@
   function liveSend() { queueSend(); }
 
   function sendNow() {
-    if (!S.pool || !S.roomSk || !isLiveBoard()) return;
+    if (!S.pool || !S.roomSk || !inRoomBoard()) return;
     S.lastSend = Date.now();
-    var ev = {
-      kind: 30078,
-      tags: [['d', 'stratboard:' + S.room]],
-      content: roomPayload()
-    };
-    NostrLite.finalize(ev, S.roomSk).then(function (signed) {
-      S.pool.publish(signed);
-    }).catch(function () {});
+    publishBoard(curBoard());
+  }
+
+  function subBoards() {
+    var m = curMap();
+    if (!S.pool || !m || !S.room) return;
+    var ids = boardsOf(m.id).map(function (b) { return boardTag(b.id); });
+    for (var from = 0; from < ids.length; from += 12) {
+      S.pool.sub('b' + from, [{
+        kinds: [30078], authors: [S.roomPub], '#d': ids.slice(from, from + 12)
+      }]);
+    }
   }
 
   function sendBeat() {
@@ -1452,18 +1481,71 @@
     }).catch(function () {});
   }
 
-  function applyRemote(data) {
-    var b = curBoard();
-    if (!b) return;
-    b.tokens = data.tokens || [];
-    b.arrows = data.arrows || [];
-    b.marks = data.marks || [];
-    b.labels = data.labels || [];
-    b.updated = Date.now();
-    dbPut('boards', b);
-    S.undo.length = 0; S.redo.length = 0;
-    syncUndoButtons();
-    render();
+  /* Bring the local setup list for this map into line with the room's. */
+  function reconcileSetups(data) {
+    var m = curMap();
+    if (!m || !data.setups) return;
+    var wanted = {}, changed = false;
+    data.setups.forEach(function (e) {
+      wanted[e.id] = e.name;
+      var local = null;
+      S.boards.forEach(function (b) { if (b.id === e.id) local = b; });
+      if (!local) {
+        local = {
+          id: e.id, mapId: m.id, room: S.room, name: e.name,
+          tokens: [], arrows: [], marks: [], labels: [], updated: Date.now()
+        };
+        S.boards.push(local);
+        dbPut('boards', local);
+        changed = true;
+      } else if (local.name !== e.name) {
+        local.name = e.name;
+        dbPut('boards', local);
+        changed = true;
+      }
+    });
+    /* Someone deleted a setup: drop it here too. */
+    boardsOf(m.id).forEach(function (b) {
+      if (!wanted[b.id]) {
+        dbDel('boards', b.id);
+        S.boards = S.boards.filter(function (x) { return x.id !== b.id; });
+        changed = true;
+      }
+    });
+    if (data.active) {
+      var has = S.boards.some(function (b) { return b.id === data.active; });
+      if (has && S.boardId !== data.active) {
+        S.boardId = data.active;
+        S.undo.length = 0; S.redo.length = 0;
+        syncUndoButtons();
+        changed = true;
+      }
+    }
+    if (!curBoard()) {
+      var list = boardsOf(m.id);
+      S.boardId = list.length ? list[0].id : newBoard(m.id, 'Default').id;
+      changed = true;
+    }
+    subBoards();
+    if (changed) { fillSelects(); render(); saveMeta(); }
+  }
+
+  function applyBoard(data) {
+    var target = null;
+    S.boards.forEach(function (b) { if (b.id === data.id) target = b; });
+    if (!target) return;
+    target.tokens = data.tokens || [];
+    target.arrows = data.arrows || [];
+    target.marks = data.marks || [];
+    target.labels = data.labels || [];
+    if (data.name && data.name !== target.name) target.name = data.name;
+    target.updated = Date.now();
+    dbPut('boards', target);
+    if (target.id === S.boardId) {
+      S.undo.length = 0; S.redo.length = 0;
+      syncUndoButtons();
+      render();
+    }
   }
 
   function onEvent(ev) {
@@ -1546,6 +1628,18 @@
         if (curMap() === hm) render();
         return;
       }
+      if (d.indexOf(roomTag() + ':b:') === 0) {
+        var bd;
+        try { bd = JSON.parse(ev.content); } catch (e) { return; }
+        if (!bd || bd.by === S.clientId) return;
+        if (gest && bd.id === S.boardId &&
+            (gest.type === 'drag' || gest.type === 'draw' || gest.type === 'draglabel')) {
+          S.pendingRemote = bd;      // never yank the board out from under a finger
+          return;
+        }
+        applyBoard(bd);
+        return;
+      }
       if (d !== roomTag()) return;
     }
 
@@ -1587,12 +1681,9 @@
       if (fresh) { renderMembers(); sendBeat(); }
     }
 
-    /* Land the state on the right map. Applying it to whatever happens to be
-       open would scribble one team's positions onto another map, and the
-       state would then be lost when the correct map arrived. */
+    /* Land on the right map before touching any setups. */
     if (data.map) {
       S.roomMapName = data.map;
-      /* A transfer we held back can now be judged against the room's map. */
       if (S.metaWaiting) {
         var held = S.metaWaiting;
         S.metaWaiting = null;
@@ -1611,27 +1702,15 @@
         S.pendingState = data;
         useMapForRoom(known);
         fitView();
-        render();
         var who = S.members[data.by] ? S.members[data.by].n : 'Someone';
         banner(who + ' switched to ' + known.name);
         renderMembers();
         return;
       }
     }
-    if (!curMap() || !curBoard()) { S.pendingState = data; return; }
-    if (!isLiveBoard()) return;
+    if (!curMap()) { S.pendingState = data; return; }
 
-    if (gest && (gest.type === 'drag' || gest.type === 'draw' || gest.type === 'draglabel')) {
-      S.pendingRemote = data;     // do not yank the board out from under a finger
-      return;
-    }
-    applyRemote(data);
-    var m = curMap();
-    if (data.map && m && data.map !== m.name) {
-      var known = haveMapNamed(data.map);
-      if (known) useMapForRoom(known);
-      else if (!S.mapRx.meta) { banner('Room is on map "' + data.map + '" — fetching it…'); askForMap(); }
-    }
+    reconcileSetups(data);
     renderMembers();
   }
 
@@ -1703,7 +1782,7 @@
     out.push('others seen: ' + Object.keys(S.members).length);
     var m = curMap(), b = curBoard();
     out.push('map: ' + (m ? m.name : 'none') + '   setup: ' + (b ? b.name : 'none') +
-             (S.room ? (isLiveBoard() ? ' (live)' : ' (private — not syncing)') : ''));
+             (S.room ? ' (shared with the room)' : ''));
     if (S.mapRx.meta) {
       out.push('incoming map: ' + Object.keys(S.mapRx.chunks).length + '/' + S.mapRx.meta.n + ' parts');
     }
@@ -1750,9 +1829,8 @@
     $('roomcode').value = code;
 
     if (S.mapId) {
-      var exists = null;
-      boardsOf(S.mapId).forEach(function (b) { if (b.name === liveBoardName()) exists = b; });
-      S.boardId = (exists || newBoard(S.mapId, liveBoardName())).id;
+      var mine = boardsOf(S.mapId);     // already scoped to the new room
+      S.boardId = (mine.length ? mine[0] : newBoard(S.mapId, 'Default')).id;
     }
     S.undo.length = 0; S.redo.length = 0;
 
@@ -1800,8 +1878,10 @@
       setTimeout(sendBeat, 900);
 
       if (curMap()) {
-        setTimeout(function () { sendNow(); publishMap(); }, 1600);
-        banner('Live room "' + S.room + '" — this setup syncs. Your other setups do not.');
+        setTimeout(function () {
+          publishRoomState(); sendNow(); publishMap(); subBoards();
+        }, 1600);
+        banner('In room "' + S.room + '" — these setups are shared.');
       } else {
         banner('Waiting for the map from the room…');
         var tries = 0;
@@ -1831,6 +1911,12 @@
     if (S.wantTimer) { clearInterval(S.wantTimer); S.wantTimer = null; }
     if (S.rxTimer) { clearTimeout(S.rxTimer); S.rxTimer = null; }
     S.room = ''; S.roomSk = null; S.roomPub = null; S.members = {};
+    if (S.mapId) {
+      var own = boardsOf(S.mapId);
+      S.boardId = (own.length ? own[0] : newBoard(S.mapId, 'Default')).id;
+      S.undo.length = 0; S.redo.length = 0;
+      fillSelects(); render(); syncUndoButtons();
+    }
     S.mapSent = false; S.mapRx = { meta: null, chunks: {} }; S.pendingState = null;
     S.roomMapName = ''; S.metaWaiting = null;
     renderMembers();
@@ -1947,7 +2033,8 @@
         fitView(); refresh(); syncUndoButtons();
         S.roomMapName = m.name;
         S.mapSent = false;
-        sendNow();          // announce the map first, so peers accept what follows
+        publishRoomState();   // announce map and setups first
+        sendNow();
         publishMap();
         toast('Everyone moved to ' + m.name);
         return;
@@ -1963,7 +2050,7 @@
       S.boardId = this.value;
       S.undo.length = 0; S.redo.length = 0;
       refresh(); syncUndoButtons();
-      if (S.room && !isLiveBoard()) banner('This setup is private. Switch to "' + liveBoardName() + '" to sync.');
+      if (S.room) { publishRoomState(); toast('Everyone moved to this setup'); }
     });
 
     $('setupsel').addEventListener('change', function () {
@@ -1971,7 +2058,7 @@
       S.boardId = this.value;
       S.undo.length = 0; S.redo.length = 0;
       refresh(); syncUndoButtons();
-      if (S.room && !isLiveBoard()) banner('This setup is private — it does not sync.');
+      if (S.room) { publishRoomState(); toast('Everyone moved to this setup'); }
     });
 
     $('menubtn').addEventListener('click', function () {
@@ -2035,9 +2122,11 @@
       ask({ title: 'New setup', field: true, placeholder: 'A site default', maxLength: 28, okText: 'Create' })
         .then(function (r) {
           if (r.action !== 'ok') return;
-          S.boardId = newBoard(S.mapId, r.value || null).id;
+          var nb2 = newBoard(S.mapId, r.value || null);
+          S.boardId = nb2.id;
           S.undo.length = 0; S.redo.length = 0;
           refresh(); syncUndoButtons();
+          if (S.room) { publishRoomState(); publishBoard(nb2); subBoards(); }
         });
     });
     $('dupboard').addEventListener('click', function () {
@@ -2050,9 +2139,11 @@
         tokens: copy.tokens, arrows: copy.arrows, marks: copy.marks, labels: copy.labels,
         updated: Date.now()
       };
+      nb.room = S.room || '';
       S.boards.push(nb); dbPut('boards', nb);
       S.boardId = nb.id;
       refresh(); toast('Duplicated');
+      if (S.room) { publishRoomState(); publishBoard(nb); subBoards(); }
     });
     $('renboard').addEventListener('click', function () {
       var b = curBoard(); if (!b) return;
@@ -2060,6 +2151,7 @@
         .then(function (r) {
           if (r.action !== 'ok' || !r.value) return;
           b.name = r.value; dbPut('boards', b); refresh();
+          if (S.room) publishRoomState();
         });
     });
     $('delboard').addEventListener('click', function () {
@@ -2072,6 +2164,7 @@
         S.boardId = (bl.length ? bl[0] : newBoard(S.mapId, 'Default')).id;
         S.undo.length = 0; S.redo.length = 0;
         refresh(); renderMapList(); syncUndoButtons();
+        if (S.room) publishRoomState();
       });
     });
 
@@ -2243,15 +2336,57 @@
     });
   }
 
+  /* ---------- entry screen ---------- */
+  function showStart() { $('start').classList.add('open'); }
+  function hideStart() {
+    $('start').classList.remove('open');
+    dbPut('meta', { k: 'seenstart', v: 1 }).catch(function () {});
+  }
+
+  function wireStart() {
+    $('startcreate').addEventListener('click', function () {
+      var words = ['hill', 'site', 'rush', 'flank', 'smoke', 'push', 'hold', 'spawn', 'rotate', 'anchor'];
+      var code = words[Math.floor(Math.random() * words.length)] + '-' +
+                 words[Math.floor(Math.random() * words.length)] + '-' +
+                 Math.floor(1000 + Math.random() * 9000);
+      hideStart();
+      joinRoom(code);
+      setTimeout(function () {
+        ask({
+          title: 'Room created', body: 'Your code is "' + code + '". Send it to your team.',
+          okText: 'Share', cancelText: 'Done'
+        }).then(function (r) { if (r.action === 'ok') $('sharroom').click(); });
+      }, 700);
+    });
+    $('startjoin').addEventListener('click', function () {
+      $('startjoinrow').style.display = 'flex';
+      $('startcode').focus();
+    });
+    function go() {
+      var code = $('startcode').value.trim();
+      if (!code) { toast('Enter the code your mate sent'); return; }
+      hideStart();
+      joinRoom(code);
+    }
+    $('startgo').addEventListener('click', go);
+    $('startcode').addEventListener('keydown', function (e) { if (e.key === 'Enter') { this.blur(); go(); } });
+    $('startsolo').addEventListener('click', function () {
+      hideStart();
+      toast('You can start a room any time from the menu');
+    });
+  }
+
   /* ---------- boot ---------- */
   function boot() {
     ensureMarkers();
     wire();
     wireInstall();
+    wireStart();
 
     openDb().then(function () {
       return Promise.all([dbAll('maps'), dbAll('boards'), dbGet('meta', 'settings'),
-                          loadBundled(), dbAll('hills'), loadHillNames()]);
+                          loadBundled(), dbAll('hills'), loadHillNames(),
+                          dbGet('meta', 'seenstart')]);
     }).then(function (res) {
       (res[4] || []).forEach(function (row) { S.hills[row.k] = row.pts || []; });
       S.maps = res[0].sort(function (a, b) { return a.created - b.created; });
@@ -2369,6 +2504,9 @@
       syncUndoButtons();
       setTool('move');
 
+      /* First run with no room to rejoin: ask how they want to start. */
+      if (!res[6] && !(st && st.room) && !/#room=/.test(location.hash)) showStart();
+
       var m = /#room=([^&]+)/.exec(location.hash);
       if (m) {
         var code = decodeURIComponent(m[1]);
@@ -2396,7 +2534,7 @@
 
     setInterval(function () {
       if (S.pendingRemote && (!gest || gest.type === 'none')) {
-        applyRemote(S.pendingRemote);
+        applyBoard(S.pendingRemote);
         S.pendingRemote = null;
       }
     }, 400);
