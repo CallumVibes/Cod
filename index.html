@@ -65,16 +65,22 @@ label.lab{display:block;font-size:13px;color:var(--dim);margin:0 0 6px}
 justify-content:center;gap:14px;padding:26px;text-align:center;color:var(--dim);font-size:14px}
 #blank h2{margin:0;font-size:17px;font-weight:500;color:var(--text)}
 #float{position:absolute;top:9px;right:9px;display:flex;flex-direction:column;gap:7px}
+#float button[aria-pressed="true"]{background:rgba(245,183,8,.18);border-color:#f5b708;color:#f5b708}
 #float button{width:40px;min-width:40px;height:40px;min-height:40px;padding:0;
 background:rgba(22,26,33,.9);border-color:#333b48;font-size:17px}
-#banner{position:absolute;left:9px;right:58px;top:9px;background:rgba(22,26,33,.94);
+#banner{position:absolute;left:9px;right:58px;top:9px;z-index:4;background:rgba(22,26,33,.94);
 border:1px solid var(--line);border-radius:var(--r);padding:8px 11px;font-size:13px;
 color:var(--dim);display:none}
 #banner.show{display:block}
 
 /* swatches */
-#swatch{display:none;gap:8px;padding:7px 8px 0;flex:none;align-items:center}
+#swatch{display:none;gap:8px;padding:8px 10px;align-items:center;
+position:absolute;left:0;right:0;top:0;z-index:5;background:rgba(13,15,19,.82);
+border-bottom:1px solid var(--line)}
 #swatch.show{display:flex}
+/* the bar floats over the board, so only its buttons may take taps */
+#swatch{pointer-events:none}
+#swatch .sw{pointer-events:auto}
 .sw{width:32px;height:32px;min-width:32px;min-height:32px;padding:0;border-radius:50%;border:2px solid transparent}
 .sw[aria-pressed="true"]{border-color:#fff}
 #swatch .wlab{font-size:12px;color:var(--faint);margin-left:auto}
@@ -133,21 +139,21 @@ padding:10px 14px;font-size:13.5px;box-shadow:0 6px 20px rgba(0,0,0,.45);text-al
     <button id="menubtn" class="flat" aria-label="Menu">&#9776;</button>
   </div>
 
-  <div id="swatch">
+  <div id="stage">
+    <div id="swatch">
     <button class="sw" data-col="#f5b708" style="background:#f5b708" aria-label="Yellow" aria-pressed="true"></button>
     <button class="sw" data-col="#e9ebef" style="background:#e9ebef" aria-label="White" aria-pressed="false"></button>
     <button class="sw" data-col="#3b82f6" style="background:#3b82f6" aria-label="Blue" aria-pressed="false"></button>
     <button class="sw" data-col="#ef4444" style="background:#ef4444" aria-label="Red" aria-pressed="false"></button>
     <button class="sw" data-col="#22c55e" style="background:#22c55e" aria-label="Green" aria-pressed="false"></button>
-    <span class="wlab" id="swlab">Arrow colour</span>
-  </div>
-
-  <div id="stage">
+      <span class="wlab" id="swlab">Arrow colour</span>
+    </div>
     <svg id="board" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000"
          preserveAspectRatio="xMidYMid meet" aria-label="Strat board">
       <defs id="defs"></defs>
       <g id="layers">
         <image id="mapimg" x="0" y="0" width="1000" height="1000" preserveAspectRatio="none"></image>
+        <g id="gHills"></g>
         <g id="gArrows"></g>
         <g id="gMarks"></g>
         <g id="gLabels"></g>
@@ -161,6 +167,7 @@ padding:10px 14px;font-size:13.5px;box-shadow:0 6px 20px rgba(0,0,0,.45);text-al
       <button id="redo" aria-label="Redo">&#8631;</button>
       <button id="fit" aria-label="Fit map to screen">&#9744;</button>
       <button id="wipe" aria-label="Clear drawing">&#10005;</button>
+      <button id="hillsbtn" aria-label="Show hardpoints" aria-pressed="true">P</button>
     </div>
     <div id="blank">
       <h2>No map yet</h2>
@@ -201,6 +208,9 @@ padding:10px 14px;font-size:13.5px;box-shadow:0 6px 20px rgba(0,0,0,.45);text-al
         <button id="newboard">New setup</button>
         <button id="dupboard">Duplicate</button>
         <button id="renboard">Rename</button>
+      </div>
+      <div class="row tight">
+        <button id="edithills">Edit hardpoints</button>
       </div>
       <div class="row tight">
         <button id="delboard" class="danger">Delete setup</button>

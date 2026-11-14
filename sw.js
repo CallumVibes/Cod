@@ -1,4 +1,4 @@
-var CACHE = 'stratboard-v21';
+var CACHE = 'stratboard-v23';
 var ASSETS = [
   './',
   './index.html',
@@ -10,6 +10,7 @@ var ASSETS = [
   './icon-512-maskable.png',
   './icon-180.png',
   './maps/index.json',
+  './maps/hardpoints.json',
   './maps/coal.jpg',
   './maps/lotus.jpg',
   './maps/munition.jpg',

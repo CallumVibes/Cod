@@ -1,0 +1,14 @@
+{
+  "cachette": ["Murder Box", "Graffiti", "Central Containers", "Armory", "Garage"],
+  "coal": ["Conveyor", "Garage", "Stockpiles", "Under Structure", "Sorting"],
+  "lithium": ["Refinery", "Packaging", "Decontamination", "Warehouse", "Road", "Silos"],
+  "lotus": ["Fish Market 1F", "Hostel 1F", "Boathouse 1F", "Garden", "Restaurant", "Market (Squid)"],
+  "mumbai": ["Slums", "Market", "Main Street", "Market Street", "Hideout"],
+  "munition": ["Side Road (Convoy)", "Missile Cache", "Main Gate", "Sky Bridge", "Side Road (Courtyard)", "Water Tower"],
+  "nautical": ["Store", "Front Deck", "Restaurant", "Passenger Cabin", "Rear Deck"],
+  "reactor": ["Reactor Hall", "Waste Treatment", "Loading Dock", "Pump Station", "Transformers"],
+  "rooftops": ["Laundry Room", "Fans", "Greenhouse", "Center", "Patio", "Pigeon Coop"],
+  "sentry": ["Control Center", "Barracks", "Dome", "Driveway", "Utility (Fuel depot)"],
+  "silkworm": ["Subway Entrance", "Apartment Alley", "Game Room", "Main Street", "Storefront Alley", "Convenience Store"],
+  "transit": ["Center Lot", "Repair Shop", "Dumpster", "Apartments", "Luggage"]
+}

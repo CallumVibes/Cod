@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2.6';
+  var VERSION = '2.9';
   /* Write-friendly public relays. relay.nostr.band is a search aggregator and
      nostr.wine is paid, so neither accepts writes from a fresh key. */
   var DEFAULT_RELAYS = [
@@ -100,12 +100,13 @@
   var DB = null;
   function openDb() {
     return new Promise(function (res, rej) {
-      var rq = indexedDB.open('stratboard', 1);
+      var rq = indexedDB.open('stratboard', 2);
       rq.onupgradeneeded = function () {
         var db = rq.result;
         if (!db.objectStoreNames.contains('maps')) db.createObjectStore('maps', { keyPath: 'id' });
         if (!db.objectStoreNames.contains('boards')) db.createObjectStore('boards', { keyPath: 'id' });
         if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta', { keyPath: 'k' });
+        if (!db.objectStoreNames.contains('hills')) db.createObjectStore('hills', { keyPath: 'k' });
       };
       rq.onsuccess = function () { DB = rq.result; res(DB); };
       rq.onerror = function () { rej(rq.error); };
@@ -176,6 +177,10 @@
     wantTimer: null,
     rxTimer: null,
     notices: [],
+    hills: {},
+    hillNames: {},
+    showHills: true,
+    hillEdit: false,
     busy: false
   };
 
@@ -218,7 +223,7 @@
   }
   function saveMeta() {
     dbPut('meta', {
-      k: 'settings', mapId: S.mapId, boardId: S.boardId, nick: S.nick,
+      k: 'settings', mapId: S.mapId, boardId: S.boardId, nick: S.nick, showHills: S.showHills,
       room: S.room, relays: S.relays, colour: S.colour, clientId: S.clientId
     });
   }
@@ -327,6 +332,7 @@
     }
 
     ['gArrows', 'gMarks', 'gLabels', 'gTokens'].forEach(function (g) { $(g).textContent = ''; });
+    renderHills();
     if (!b) return;
 
     var sw = strokeW();
@@ -375,6 +381,15 @@
       t.textContent = l.t;
       g.appendChild(t);
       $('gLabels').appendChild(g);
+      try {
+        var bb = t.getBBox(), padx = fs * 0.4, pady = fs * 0.3;
+        var pad = svgEl('rect', {
+          x: bb.x - padx, y: bb.y - pady,
+          width: bb.width + padx * 2, height: bb.height + pady * 2,
+          fill: 'rgba(0,0,0,0)'
+        });
+        g.insertBefore(pad, t);
+      } catch (e) {}
     });
 
     var tr = clamp(S.view.w / 30, 11, 40);
@@ -394,6 +409,97 @@
       g.appendChild(t);
       $('gTokens').appendChild(g);
     });
+  }
+
+  /* ---------- hardpoints ---------- */
+  /* Hills belong to the map, not to a setup, so every setup on a map shows
+     the same rotation. Positions are yours to place — there is no reliable
+     source of them to ship. */
+  function hillsFor(mapId) { return S.hills[mapId] || []; }
+
+  function saveHills(mapId) {
+    dbPut('hills', { k: mapId, pts: hillsFor(mapId) }).catch(function () {});
+    publishHills(true);
+  }
+
+  function renderHills() {
+    var g = $('gHills');
+    if (!g) return;
+    g.textContent = '';
+    var m = curMap();
+    if (!m || (!S.showHills && !S.hillEdit)) return;
+    var pts = hillsFor(m.id);
+    var r = clamp(S.view.w / 22, 14, 52);
+    pts.forEach(function (p, i) {
+      var box = svgEl('g', { 'data-kind': 'hill', 'data-id': String(i) });
+      box.appendChild(svgEl('rect', {
+        x: p.x - r, y: p.y - r, width: r * 2, height: r * 2, rx: r * 0.28,
+        fill: 'rgba(245,183,8,0.18)', stroke: '#f5b708', 'stroke-width': r * 0.12
+      }));
+      var t = svgEl('text', {
+        x: p.x, y: p.y + r * 0.34, 'text-anchor': 'middle',
+        'font-size': r * 0.95, 'font-weight': '600', fill: '#f5b708',
+        stroke: '#0a0c10', 'stroke-width': r * 0.1, 'paint-order': 'stroke'
+      });
+      t.textContent = 'P' + (i + 1);
+      t.style.pointerEvents = 'none';
+      box.appendChild(t);
+      if (p.n) {
+        var nm = svgEl('text', {
+          x: p.x, y: p.y + r * 1.5, 'text-anchor': 'middle',
+          'font-size': r * 0.5, 'font-weight': '500', fill: '#f5b708',
+          stroke: '#0a0c10', 'stroke-width': r * 0.09, 'paint-order': 'stroke'
+        });
+        nm.textContent = p.n;
+        nm.style.pointerEvents = 'none';
+        box.appendChild(nm);
+      }
+      g.appendChild(box);
+    });
+  }
+
+  function hillsTag(name) { return roomTag() + ':hills:' + name; }
+
+  function publishHills(force) {
+    var m = curMap();
+    if (!S.pool || !S.roomSk || !m) return;
+    /* Only an explicit edit may publish an empty list; otherwise joining with
+       no hills of your own would wipe everyone else's. */
+    if (!force && !hillsFor(m.id).length) return;
+    NostrLite.finalize({
+      kind: 30078, tags: [['d', hillsTag(m.name)]],
+      content: JSON.stringify({ by: S.clientId, pts: hillsFor(m.id) })
+    }, S.roomSk).then(function (ev) { if (S.pool) S.pool.publish(ev); }).catch(function () {});
+  }
+
+  function subHills() {
+    var m = curMap();
+    if (!S.pool || !m) return;
+    S.pool.sub('hills', [{ kinds: [30078], authors: [S.roomPub], '#d': [hillsTag(m.name)] }]);
+  }
+
+  function hillPrompt(m) {
+    var rot = rotationFor(m.name), have = hillsFor(m.id).length;
+    if (!rot.length) {
+      banner('Tap to place hill ' + (have + 1) + '. Tap one to remove it.');
+    } else if (have >= rot.length) {
+      banner('All ' + rot.length + ' hills placed. Tap one to remove it, or press P when done.');
+    } else {
+      banner('Tap where P' + (have + 1) + ' is — ' + rot[have]);
+    }
+  }
+
+  function setHillEdit(on) {
+    S.hillEdit = on;
+    $('hillsbtn').setAttribute('aria-pressed', S.showHills ? 'true' : 'false');
+    if (on) {
+      S.showHills = true;
+      var m = curMap();
+      if (m) hillPrompt(m); else banner('Tap the map to place hills in rotation order.');
+    } else {
+      banner('');
+    }
+    render();
   }
 
   /* ---------- selects ---------- */
@@ -454,7 +560,7 @@
     if (!m) return;
     /* The floating controls sit inside the board, so their taps bubble here.
        Without this, pressing Undo with the Mark tool active dropped a mark. */
-    if (e.target.closest && e.target.closest('#float, #banner, #blank')) return;
+    if (e.target.closest && e.target.closest('#float, #banner, #blank, #swatch')) return;
     ptrs[e.pointerId] = { x: e.clientX, y: e.clientY };
     var n = Object.keys(ptrs).length;
 
@@ -482,6 +588,23 @@
 
     var p = onMap(toSvg(e.clientX, e.clientY));
     var hitEl = e.target.closest ? e.target.closest('[data-kind]') : null;
+
+    if (S.hillEdit) {
+      var m2 = curMap();
+      if (m2) {
+        var hit = hitEl && hitEl.getAttribute('data-kind') === 'hill' ? hitEl : null;
+        var pts = S.hills[m2.id] = hillsFor(m2.id).slice();
+        if (hit) pts.splice(+hit.getAttribute('data-id'), 1);
+        else if (pts.length < 9) pts.push({ x: p.x, y: p.y });
+        var rot = rotationFor(m2.name);
+        pts.forEach(function (pt, i) { pt.n = rot[i] || ''; });
+        saveHills(m2.id);
+        render();
+        hillPrompt(m2);
+      }
+      gest = { type: 'none' };
+      return;
+    }
 
     if (S.tool === 'erase') {
       if (hitEl) {
@@ -739,6 +862,26 @@
   /* Maps shipped with the app. They are rebuilt from maps/index.json on every
      launch rather than stored, so the list always matches the deployed build,
      and their ids are stable so setups and live rooms line up across phones. */
+  function loadHillNames() {
+    return fetch('maps/hardpoints.json', { cache: 'no-cache' })
+      .then(function (r) { return r.ok ? r.json() : {}; })
+      .then(function (j) { S.hillNames = j || {}; })
+      .catch(function () { S.hillNames = {}; });
+  }
+
+  /* Rotation names come from the published rotations; match loosely so
+     "Reactor U92" and "Reactor" find the same list. */
+  function rotationFor(name) {
+    var key = String(name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    var table = S.hillNames || {};
+    if (table[key]) return table[key];
+    var hit = null;
+    Object.keys(table).forEach(function (k) {
+      if (!hit && (key.indexOf(k) === 0 || k.indexOf(key) === 0)) hit = table[k];
+    });
+    return hit || [];
+  }
+
   function loadBundled() {
     function get(opts) {
       return fetch('maps/index.json', opts).then(function (r) {
@@ -904,8 +1047,11 @@
     var pack = {
       app: 'stratboard', v: 1, made: new Date().toISOString(),
       /* Built-in maps ship with the app, so a pack only carries your own. */
+      hills: S.maps.map(function (m) { return { map: m.name, pts: hillsFor(m.id) }; })
+        .filter(function (h) { return h.pts.length; }),
       maps: S.maps.filter(function (m) { return !m.bundled; }).map(function (m) {
-        return { name: m.name, type: m.type || 'image/jpeg', pxw: m.pxw, pxh: m.pxh, h: m.h, img: b64FromBuf(m.buf) };
+        return { name: m.name, type: m.type || 'image/jpeg', pxw: m.pxw, pxh: m.pxh, h: m.h,
+                 hills: hillsFor(m.id), img: b64FromBuf(m.buf) };
       }),
       boards: S.boards.map(function (b) {
         var mn = '';
@@ -956,6 +1102,12 @@
         });
       });
       Promise.all(jobs).then(function () {
+        (pack.hills || []).forEach(function (h) {
+          var hm = byName[h.map];
+          if (!hm || !h.pts || !h.pts.length || hillsFor(hm.id).length) return;
+          S.hills[hm.id] = h.pts;
+          dbPut('hills', { k: hm.id, pts: h.pts }).catch(function () {});
+        });
         var bAdded = 0;
         (pack.boards || []).forEach(function (pb) {
           var m = byName[pb.map];
@@ -1167,6 +1319,8 @@
     }
     renderMapList();
     saveMeta();
+    subHills();
+    publishHills();
   }
 
   /* If parts stop arriving, say so with numbers rather than spinning forever. */
@@ -1380,6 +1534,18 @@
         tryAssembleMap();
         return;
       }
+      if (d.indexOf(roomTag() + ':hills:') === 0) {
+        var hm = null, hname = d.slice((roomTag() + ':hills:').length);
+        S.maps.forEach(function (x) { if (x.name === hname) hm = x; });
+        if (!hm) return;
+        var hp;
+        try { hp = JSON.parse(ev.content); } catch (e) { return; }
+        if (!hp || hp.by === S.clientId || !hp.pts) return;
+        S.hills[hm.id] = hp.pts;
+        dbPut('hills', { k: hm.id, pts: hp.pts }).catch(function () {});
+        if (curMap() === hm) render();
+        return;
+      }
       if (d !== roomTag()) return;
     }
 
@@ -1469,13 +1635,13 @@
     renderMembers();
   }
 
-  function banner(txt) {
+  function banner(txt, ms) {
     var b = $('banner');
+    clearTimeout(banner._t);
     if (!txt) { b.classList.remove('show'); return; }
     b.textContent = txt;
     b.classList.add('show');
-    clearTimeout(banner._t);
-    banner._t = setTimeout(function () { b.classList.remove('show'); }, 6000);
+    banner._t = setTimeout(function () { b.classList.remove('show'); }, ms || 6000);
   }
 
   function prune() {
@@ -1627,6 +1793,8 @@
         since: Math.floor(Date.now() / 1000) - 60
       }]);
       S.pool.sub('mapmeta', [{ kinds: [30078], authors: [S.roomPub], '#d': [mapMetaTag()] }]);
+      subHills();
+      setTimeout(function () { publishHills(); }, 1900);
 
       S.beat = setInterval(function () { sendBeat(); prune(); }, BEAT_MS);
       setTimeout(sendBeat, 900);
@@ -1680,7 +1848,7 @@
     var sw = $('swatch');
     if (t === 'ping') {
       sw.classList.remove('show');
-      banner('Tap the map to ping. You can also hold the map in Move.');
+      banner('Tap the map to ping, or hold the map in Move.', 3000);
       return;
     }
     if (t === 'arrow' || t === 'mark' || t === 'text') {
@@ -1731,6 +1899,20 @@
     $('undo').addEventListener('click', doUndo);
     $('redo').addEventListener('click', doRedo);
     $('fit').addEventListener('click', function () { fitView(); render(); });
+    $('hillsbtn').addEventListener('click', function () {
+      if (S.hillEdit) { setHillEdit(false); toast('Hardpoints saved'); return; }
+      S.showHills = !S.showHills;
+      this.setAttribute('aria-pressed', S.showHills ? 'true' : 'false');
+      render(); saveMeta();
+      toast(S.showHills ? 'Hardpoints shown' : 'Hardpoints hidden');
+    });
+
+    $('edithills').addEventListener('click', function () {
+      if (!curMap()) { toast('Pick a map first'); return; }
+      closeSheet('menu');
+      setHillEdit(true);
+    });
+
     $('wipe').addEventListener('click', function () {
       var b = curBoard();
       if (!b) return;
@@ -1987,12 +2169,28 @@
       });
     });
 
-    window.addEventListener('resize', function () {
-      var h = mapH();
+    /* Keep what is on screen steady when the board's box changes — rotation,
+       the browser's address bar, anything. Matching the viewBox aspect to the
+       element's is what stops the map jumping about. */
+    function reflow() {
+      var st = $('stage');
+      if (!st.clientWidth || !st.clientHeight) return;
       var cur = S.view;
-      setView({ x: cur.x, y: cur.y, w: cur.w, h: cur.w * ($('stage').clientHeight / Math.max(1, $('stage').clientWidth)) });
+      var cx = cur.x + cur.w / 2, cy = cur.y + cur.h / 2;
+      var h = cur.w * (st.clientHeight / st.clientWidth);
+      setView({ x: cx - cur.w / 2, y: cy - h / 2, w: cur.w, h: h });
       render();
+    }
+    window.addEventListener('resize', reflow);
+    /* A quarter turn is not a resize to be preserved — refit instead, or the
+       map ends up taller than the screen. */
+    window.addEventListener('orientationchange', function () {
+      setTimeout(function () { fitView(); render(); }, 280);
     });
+    if (window.ResizeObserver) {
+      var ro = new ResizeObserver(function () { reflow(); });
+      ro.observe($('stage'));
+    }
 
     document.addEventListener('visibilitychange', function () {
       if (!document.hidden && S.pool) { sendBeat(); prune(); }
@@ -2043,8 +2241,10 @@
     wireInstall();
 
     openDb().then(function () {
-      return Promise.all([dbAll('maps'), dbAll('boards'), dbGet('meta', 'settings'), loadBundled()]);
+      return Promise.all([dbAll('maps'), dbAll('boards'), dbGet('meta', 'settings'),
+                          loadBundled(), dbAll('hills'), loadHillNames()]);
     }).then(function (res) {
+      (res[4] || []).forEach(function (row) { S.hills[row.k] = row.pts || []; });
       S.maps = res[0].sort(function (a, b) { return a.created - b.created; });
       S.boards = res[1];
       var bundled = res[3] || [];
@@ -2118,6 +2318,7 @@
         }
         if (!S.relays.length) S.relays = DEFAULT_RELAYS.slice();
         S.colour = st.colour || S.colour;
+        if (st.showHills === false) S.showHills = false;
         S.clientId = st.clientId || S.clientId;
         if (st.mapId && S.maps.some(function (m) { return m.id === st.mapId; })) S.mapId = st.mapId;
         if (st.boardId && S.boards.some(function (b) { return b.id === st.boardId; })) S.boardId = st.boardId;
@@ -2131,6 +2332,7 @@
       }
 
       $('nick').value = S.nick;
+      $('hillsbtn').setAttribute('aria-pressed', S.showHills ? 'true' : 'false');
       $('relays').value = S.relays.join('\n');
       $('menusub').textContent = 'Version ' + VERSION + ' · everything saves on this phone.';
       renderDiag();
