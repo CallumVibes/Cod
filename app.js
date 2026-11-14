@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2.0';
+  var VERSION = '2.1';
   /* Write-friendly public relays. relay.nostr.band is a search aggregator and
      nostr.wine is paid, so neither accepts writes from a fresh key. */
   var DEFAULT_RELAYS = [
@@ -171,6 +171,8 @@
     pendingState: null,
     mapRx: { meta: null, chunks: {} },
     mapSent: false,
+    roomMapName: '',
+    metaWaiting: null,
     wantTimer: null,
     rxTimer: null,
     notices: [],
@@ -776,7 +778,9 @@
            live setup and push it out, rather than dropping onto a private one. */
         S.objUrl = null;
         useMapForRoom(first);
+        S.roomMapName = first.name;
         S.mapSent = false;
+        sendNow();          // announce the map first, so peers accept what follows
         publishMap(true);
         fitView(); refresh(); renderMapList(); syncUndoButtons();
         toast('Map added — sending to the room');
@@ -1003,9 +1007,17 @@
     var m = curMap();
     if (!S.pool || !S.roomSk || !m) return;
     if (m.bundled) {
-      /* Shipped with the app, so everyone already has it — matching on the
-         name is enough and saves pushing an image through the relays. */
-      if (force) toast('"' + m.name + '" is built in — no need to send it');
+      /* Everyone already has it, so send a marker rather than the image. The
+         marker matters: it replaces whatever map the room pointed at before,
+         so an old transfer cannot keep reinstalling itself on every join. */
+      S.mapSent = true;
+      NostrLite.finalize({
+        kind: 30078, tags: [['d', mapMetaTag()]],
+        content: JSON.stringify({ name: m.name, builtin: true, n: 0, h: m.h })
+      }, S.roomSk).then(function (ev) {
+        if (S.pool) S.pool.publish(ev);
+      }).catch(function () {});
+      if (force) toast('"' + m.name + '" is built in — everyone has it');
       return;
     }
     if (S.mapSent && !force) return;
@@ -1233,7 +1245,19 @@
           if (curMap() !== known) useMapForRoom(known);
           return;
         }
+        /* A marker for a map everyone already has: just follow it. */
+        if (meta.builtin || !meta.n) {
+          var have = haveMapNamed(meta.name);
+          if (have && curMap() !== have) useMapForRoom(have);
+          return;
+        }
         if (!meta.xid) { banner('Sender is on an older version — ask them to update.'); return; }
+
+        /* Only take a transfer for the map the room is actually on. The
+           record is per-room and sticks around, so an old one would
+           otherwise reinstall a map you deleted every time you rejoin. */
+        if (S.roomMapName && meta.name !== S.roomMapName) return;
+        if (!S.roomMapName && curMap()) { S.metaWaiting = meta; return; }
         if (!S.mapRx.meta || S.mapRx.meta.xid !== meta.xid) S.mapRx = { meta: meta, chunks: {} };
         else S.mapRx.meta = meta;
         banner('Getting "' + meta.name + '" from the room…');
@@ -1307,6 +1331,16 @@
        open would scribble one team's positions onto another map, and the
        state would then be lost when the correct map arrived. */
     if (data.map) {
+      S.roomMapName = data.map;
+      /* A transfer we held back can now be judged against the room's map. */
+      if (S.metaWaiting) {
+        var held = S.metaWaiting;
+        S.metaWaiting = null;
+        if (held.name === data.map) onEvent({
+          pubkey: S.roomPub, kind: 30078,
+          tags: [['d', mapMetaTag()]], content: JSON.stringify(held)
+        });
+      }
       var known = haveMapNamed(data.map);
       if (!known) {
         S.pendingState = data;
@@ -1456,6 +1490,8 @@
     S.mapSent = false;
     S.mapRx = { meta: null, chunks: {} };
     S.pendingState = null;
+    S.roomMapName = '';
+    S.metaWaiting = null;
     $('roomcode').value = code;
 
     if (S.mapId) {
@@ -1539,6 +1575,7 @@
     if (S.rxTimer) { clearTimeout(S.rxTimer); S.rxTimer = null; }
     S.room = ''; S.roomSk = null; S.roomPub = null; S.members = {};
     S.mapSent = false; S.mapRx = { meta: null, chunks: {} }; S.pendingState = null;
+    S.roomMapName = ''; S.metaWaiting = null;
     renderMembers();
     saveMeta();
     if (!quiet) { toast('Left the room'); banner(''); }
@@ -1611,9 +1648,10 @@
         /* In a room, changing the map takes the whole team with you. */
         useMapForRoom(m);
         fitView(); refresh(); syncUndoButtons();
+        S.roomMapName = m.name;
         S.mapSent = false;
+        sendNow();          // announce the map first, so peers accept what follows
         publishMap();
-        sendNow();
         toast('Everyone moved to ' + m.name);
         return;
       }
