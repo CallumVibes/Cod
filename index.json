@@ -1,0 +1,26 @@
+[
+  {
+    "file": "coal.jpg",
+    "name": "Coal",
+    "w": 1400,
+    "h": 1400
+  },
+  {
+    "file": "lotus.jpg",
+    "name": "Lotus",
+    "w": 1400,
+    "h": 1400
+  },
+  {
+    "file": "munition.jpg",
+    "name": "Munition",
+    "w": 1024,
+    "h": 1024
+  },
+  {
+    "file": "silkworm.jpg",
+    "name": "Silkworm",
+    "w": 1024,
+    "h": 1024
+  }
+]

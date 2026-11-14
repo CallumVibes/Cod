@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '1.7';
+  var VERSION = '1.8';
   /* Write-friendly public relays. relay.nostr.band is a search aggregator and
      nostr.wine is paid, so neither accepts writes from a fresh key. */
   var DEFAULT_RELAYS = [
@@ -689,10 +689,31 @@
 
   function attachUrl(m) {
     if (m._url) return m;
+    if (m.src) { m._url = m.src; return m; }     // bundled: served from the site
     try {
       m._url = URL.createObjectURL(new Blob([m.buf], { type: m.type || 'image/jpeg' }));
     } catch (e) { m._url = ''; }
     return m;
+  }
+
+  /* Maps shipped with the app. They are rebuilt from maps/index.json on every
+     launch rather than stored, so the list always matches the deployed build,
+     and their ids are stable so setups and live rooms line up across phones. */
+  function loadBundled() {
+    return fetch('maps/index.json', { cache: 'no-cache' }).then(function (r) {
+      if (!r.ok) throw new Error('no index');
+      return r.json();
+    }).then(function (list) {
+      return (list || []).map(function (e) {
+        var rec = {
+          id: 'built-in:' + e.file, name: e.name || e.file, src: 'maps/' + e.file,
+          bundled: true, pxw: e.w || 1000, pxh: e.h || 1000,
+          h: Math.round(MAPW * (e.h || 1000) / (e.w || 1000)), created: 0
+        };
+        attachUrl(rec);
+        return rec;
+      });
+    }).catch(function () { return []; });
   }
 
   function addMapFromFile(file, presetName) {
@@ -765,6 +786,14 @@
       var mt = document.createElement('span');
       mt.className = 'mt';
       mt.textContent = boardsOf(m.id).length + ' setup' + (boardsOf(m.id).length === 1 ? '' : 's');
+      if (m.bundled) {
+        var tag = document.createElement('span');
+        tag.className = 'pill';
+        tag.textContent = 'built in';
+        row.appendChild(nm); row.appendChild(mt); row.appendChild(tag);
+        box.appendChild(row);
+        return;
+      }
       var ren = document.createElement('button');
       ren.textContent = 'Rename';
       ren.addEventListener('click', function () {
@@ -820,10 +849,12 @@
   }
 
   function exportPack() {
-    if (!S.maps.length) { toast('Nothing to share yet'); return; }
+    var own = S.maps.filter(function (m) { return !m.bundled; });
+    if (!own.length && !S.boards.length) { toast('Nothing to share yet'); return; }
     var pack = {
       app: 'stratboard', v: 1, made: new Date().toISOString(),
-      maps: S.maps.map(function (m) {
+      /* Built-in maps ship with the app, so a pack only carries your own. */
+      maps: S.maps.filter(function (m) { return !m.bundled; }).map(function (m) {
         return { name: m.name, type: m.type || 'image/jpeg', pxw: m.pxw, pxh: m.pxh, h: m.h, img: b64FromBuf(m.buf) };
       }),
       boards: S.boards.map(function (b) {
@@ -947,6 +978,12 @@
   function publishMap(force) {
     var m = curMap();
     if (!S.pool || !S.roomSk || !m) return;
+    if (m.bundled) {
+      /* Shipped with the app, so everyone already has it — matching on the
+         name is enough and saves pushing an image through the relays. */
+      if (force) toast('"' + m.name + '" is built in — no need to send it');
+      return;
+    }
     if (S.mapSent && !force) return;
     S.mapSent = true;
 
@@ -1232,6 +1269,24 @@
     }
     if (ev.kind !== 30078) return;
     if (data.by === S.clientId) return;
+
+    /* Land the state on the right map. Applying it to whatever happens to be
+       open would scribble one team's positions onto another map, and the
+       state would then be lost when the correct map arrived. */
+    if (data.map) {
+      var known = haveMapNamed(data.map);
+      if (!known) {
+        S.pendingState = data;
+        if (!S.mapRx.meta) { banner('Room is on "' + data.map + '" — fetching it…'); askForMap(); }
+        return;
+      }
+      if (curMap() !== known) {
+        S.pendingState = data;
+        useMapForRoom(known);
+        renderMembers();
+        return;
+      }
+    }
     if (!curMap() || !curBoard()) { S.pendingState = data; return; }
     if (!isLiveBoard()) return;
 
@@ -1676,7 +1731,7 @@
         });
         return;
       }
-      toast('Sending map…');
+      if (!curMap().bundled) toast('Sending map…');
       publishMap(true);
     });
 
@@ -1768,10 +1823,11 @@
     wireInstall();
 
     openDb().then(function () {
-      return Promise.all([dbAll('maps'), dbAll('boards'), dbGet('meta', 'settings')]);
+      return Promise.all([dbAll('maps'), dbAll('boards'), dbGet('meta', 'settings'), loadBundled()]);
     }).then(function (res) {
       S.maps = res[0].sort(function (a, b) { return a.created - b.created; });
       S.boards = res[1];
+      var bundled = res[3] || [];
 
       /* Clear up duplicate maps left by the transfer race: same name, same
          image. Keep the oldest and move its setups across. */
@@ -1797,6 +1853,30 @@
       S.boards = S.boards.filter(function (b) { return !b._drop; });
 
       S.maps.forEach(attachUrl);
+      /* Built-in maps first, and a user copy of the same name gives way. */
+      var builtNames = {};
+      bundled.forEach(function (m) { builtNames[m.name] = true; });
+      S.maps = bundled.concat(S.maps.filter(function (m) {
+        if (!builtNames[m.name]) return true;
+        if (m._url) { try { URL.revokeObjectURL(m._url); } catch (e) {} }
+        S.boards.forEach(function (b) {
+          if (b.mapId === m.id) { b.mapId = 'built-in:' + m.name.toLowerCase() + '.jpg'; }
+        });
+        dbDel('maps', m.id);
+        return false;
+      }));
+      /* Repoint any board whose remapped id does not exist to the right one. */
+      var byId = {};
+      S.maps.forEach(function (m) { byId[m.id] = true; });
+      bundled.forEach(function (bm) {
+        S.boards.forEach(function (b) {
+          if (!byId[b.mapId] && b.mapId.indexOf('built-in:') === 0 &&
+              b.mapId.toLowerCase().indexOf(bm.name.toLowerCase()) >= 0) {
+            b.mapId = bm.id;
+            dbPut('boards', b);
+          }
+        });
+      });
 
       var st = res[2];
       var dropped = [];

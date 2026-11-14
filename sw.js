@@ -1,4 +1,4 @@
-var CACHE = 'stratboard-v9';
+var CACHE = 'stratboard-v13';
 var ASSETS = [
   './',
   './index.html',
@@ -8,7 +8,12 @@ var ASSETS = [
   './icon-192.png',
   './icon-512.png',
   './icon-512-maskable.png',
-  './icon-180.png'
+  './icon-180.png',
+  './maps/index.json',
+  './maps/coal.jpg',
+  './maps/lotus.jpg',
+  './maps/munition.jpg',
+  './maps/silkworm.jpg'
 ];
 
 self.addEventListener('install', function (e) {
