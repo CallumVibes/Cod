@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2.1';
+  var VERSION = '2.2';
   /* Write-friendly public relays. relay.nostr.band is a search aggregator and
      nostr.wine is paid, so neither accepts writes from a fresh key. */
   var DEFAULT_RELAYS = [
@@ -1421,20 +1421,15 @@
     var box = $('members');
     box.textContent = '';
     if (!S.room) return;
-    var st = S.pool ? S.pool.status() : { up: 0, total: 0 };
+    /* The status line above already covers the room, headcount and relays —
+       this is only who else is here. */
+    var others = Object.keys(S.members);
+    if (!others.length) return;
     var wrap = document.createElement('div');
     wrap.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 0';
-    var p1 = document.createElement('span');
-    p1.className = 'pill' + (st.up ? ' ok' : '');
-    p1.textContent = st.up + '/' + st.total + ' relays';
-    wrap.appendChild(p1);
-    var me = document.createElement('span');
-    me.className = 'pill ok';
-    me.textContent = (S.nick || 'You') + ' (you)';
-    wrap.appendChild(me);
-    Object.keys(S.members).forEach(function (k) {
+    others.forEach(function (k) {
       var s = document.createElement('span');
-      s.className = 'pill';
+      s.className = 'pill ok';
       s.textContent = S.members[k].n;
       wrap.appendChild(s);
     });
