@@ -26,8 +26,10 @@ The six tools along the bottom:
 | **Text** | Place a label. Drag labels in Move mode. |
 | **Erase** | Tap an arrow, mark or label to remove it. |
 
-Top right: undo, redo, fit the map to the screen, clear the drawing, and **P**
-to show or hide hardpoints.
+Top right: undo, redo, fit the map to the screen, clear the drawing, **P** for
+hardpoints, and the arrows to flip the map round when you spawn the other side.
+The map turns; the writing on it stays the right way up. Each map remembers
+whether you had it flipped.
 
 ## Playing together
 
@@ -84,5 +86,4 @@ makes one file, they use *Import pack*.
 A static site — no server, no accounts, no tracking. Your maps and setups are
 stored on your own device. Live rooms go over public [Nostr](https://nostr.com)
 relays: the room code becomes a keypair, so anyone with the code can read and
-write the room and nobody else can find it. You can swap the relay list in the
-menu.
+write the room and nobody else can find it.

@@ -53,13 +53,15 @@ label.lab{display:block;font-size:13px;color:var(--dim);margin:0 0 6px}
 #mapsel{flex:1.1;min-width:0}
 #boardsel{flex:1;min-width:0}
 #live{min-width:var(--tap);padding:0 10px;font-size:13px;position:relative}
+#livebtn{flex:none;padding:0 11px;gap:6px;font-size:14px;font-weight:500}
 #live .dot{width:8px;height:8px;border-radius:50%;background:var(--faint);flex:none}
 #live.on .dot{background:var(--green)}
 #live.on{border-color:#1f4a31;color:#9ae6b4}
 
 /* stage */
 #stage{position:relative;flex:1;min-height:200px;overflow:hidden;background:#0a0c10;touch-action:none}
-#board{position:absolute;inset:0;width:100%;height:100%;display:block}
+#board{position:absolute;inset:0;width:100%;height:100%;display:block;
+transform-origin:50% 50%}
 #board text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
 #blank{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;
 justify-content:center;gap:14px;padding:26px;text-align:center;color:var(--dim);font-size:14px}
@@ -83,7 +85,6 @@ border-bottom:1px solid var(--line)}
 #swatch .sw{pointer-events:auto}
 .sw{width:32px;height:32px;min-width:32px;min-height:32px;padding:0;border-radius:50%;border:2px solid transparent}
 .sw[aria-pressed="true"]{border-color:#fff}
-#swatch .wlab{font-size:12px;color:var(--faint);margin-left:auto}
 
 /* tools */
 #tools{display:grid;grid-template-columns:repeat(6,1fr);gap:5px;padding:7px 8px;flex:none;
@@ -136,6 +137,12 @@ button.big{height:54px;min-height:54px;font-size:16px}
 #startjoinrow input{flex:1}
 #startjoinrow button{flex:none;padding:0 20px}
 #startsolo{margin-top:9px;color:var(--dim);font-size:14px}
+/* Pings animate in CSS, not SMIL: CSS animations start when the element is
+   inserted, SMIL offsets are measured from page load. */
+@keyframes sbRing{0%{transform:scale(.3);opacity:1}70%{opacity:.3}100%{transform:scale(1.7);opacity:0}}
+@keyframes sbHold{0%,80%{opacity:1}100%{opacity:0}}
+.sb-ring{animation:sbRing 1.15s ease-out 4 both;transform-origin:0 0}
+.sb-hold{animation:sbHold 4.9s linear both}
 #toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(84px + env(safe-area-inset-bottom));
 z-index:60;display:flex;flex-direction:column;gap:7px;align-items:center;pointer-events:none;width:92%;max-width:420px}
 #toast div{background:#262c37;border:1px solid #39414f;border-radius:var(--r);
@@ -158,7 +165,6 @@ padding:10px 14px;font-size:13.5px;box-shadow:0 6px 20px rgba(0,0,0,.45);text-al
     <button class="sw" data-col="#3b82f6" style="background:#3b82f6" aria-label="Blue" aria-pressed="false"></button>
     <button class="sw" data-col="#ef4444" style="background:#ef4444" aria-label="Red" aria-pressed="false"></button>
     <button class="sw" data-col="#22c55e" style="background:#22c55e" aria-label="Green" aria-pressed="false"></button>
-      <span class="wlab" id="swlab">Arrow colour</span>
     </div>
     <svg id="board" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000"
          preserveAspectRatio="xMidYMid meet" aria-label="Strat board">
@@ -179,7 +185,8 @@ padding:10px 14px;font-size:13.5px;box-shadow:0 6px 20px rgba(0,0,0,.45);text-al
       <button id="redo" aria-label="Redo">&#8631;</button>
       <button id="fit" aria-label="Fit map to screen">&#9744;</button>
       <button id="wipe" aria-label="Clear drawing">&#10005;</button>
-      <button id="hillsbtn" aria-label="Show hardpoints" aria-pressed="true">P</button>
+      <button id="hillsbtn" aria-label="Show hardpoints" aria-pressed="false">P</button>
+      <button id="flipbtn" aria-label="Flip the map around" aria-pressed="false">&#8645;</button>
     </div>
     <div id="blank">
       <h2>No map yet</h2>
@@ -263,15 +270,6 @@ padding:10px 14px;font-size:13.5px;box-shadow:0 6px 20px rgba(0,0,0,.45);text-al
       </div>
       <div id="members"></div>
       <p class="hint">The code is the only password — pick one your mates would not guess.</p>
-    </div>
-
-    <div class="sect">
-      <h3>Relays</h3>
-      <textarea id="relays" rows="3" spellcheck="false" autocapitalize="none"></textarea>
-      <div class="row" style="margin-top:8px">
-        <button id="saverelays">Save relays</button>
-        <button id="defrelays">Defaults</button>
-      </div>
     </div>
 
     <div class="sect">

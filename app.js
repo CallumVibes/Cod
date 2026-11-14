@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '3.1';
+  var VERSION = '3.5';
   /* Write-friendly public relays. relay.nostr.band is a search aggregator and
      nostr.wine is paid, so neither accepts writes from a fresh key. */
   var DEFAULT_RELAYS = [
@@ -176,9 +176,11 @@
     metaWaiting: null,
     wantTimer: null,
     rxTimer: null,
+    relayFallback: null,
     notices: [],
     hills: {},
     hillNames: {},
+    flips: {},
     showHills: true,
     hillEdit: false,
     busy: false
@@ -230,6 +232,7 @@
   function saveMeta() {
     dbPut('meta', {
       k: 'settings', mapId: S.mapId, boardId: S.boardId, nick: S.nick, showHills: S.showHills,
+      flips: S.flips,
       room: S.room, relays: S.relays, colour: S.colour, clientId: S.clientId
     });
   }
@@ -294,6 +297,23 @@
     v.y = clamp(v.y, -v.h / 2, h - v.h / 2);
     return v;
   }
+  /* Flipping turns the board 180° so your spawn can sit at the bottom. The
+     map rotates; the writing on it does not. */
+  function isFlipped() {
+    var m = curMap();
+    return !!(m && S.flips[m.id]);
+  }
+  function applyFlip() {
+    var on = isFlipped();
+    $('board').style.transform = on ? 'rotate(180deg)' : '';
+    var btn = $('flipbtn');
+    if (btn) btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
+  /* Keep a text label upright by spinning it back about its own anchor. */
+  function uprightAt(el, x, y) {
+    if (isFlipped()) el.setAttribute('transform', 'rotate(180 ' + x + ' ' + y + ')');
+  }
+
   function setView(v) {
     S.view = clampView(v);
     $('board').setAttribute('viewBox', S.view.x + ' ' + S.view.y + ' ' + S.view.w + ' ' + S.view.h);
@@ -314,9 +334,18 @@
   }
 
   function toSvg(cx, cy) {
-    var m = $('board').getScreenCTM();
+    var svg = $('board');
+    var m = svg.getScreenCTM();
     if (!m) return { x: 0, y: 0 };
-    return { x: (cx - m.e) / m.a, y: (cy - m.f) / m.d };
+    var inv = m.inverse();
+    if (window.DOMPoint) {
+      var r = new DOMPoint(cx, cy).matrixTransform(inv);
+      return { x: r.x, y: r.y };
+    }
+    var p = svg.createSVGPoint();
+    p.x = cx; p.y = cy;
+    var q = p.matrixTransform(inv);
+    return { x: q.x, y: q.y };
   }
 
   function strokeW() { return clamp(S.view.w / 125, 2.2, 14); }
@@ -337,6 +366,7 @@
       }
     }
 
+    applyFlip();
     ['gArrows', 'gMarks', 'gLabels', 'gTokens'].forEach(function (g) { $(g).textContent = ''; });
     renderHills();
     if (!b) return;
@@ -385,6 +415,7 @@
         stroke: '#0a0c10', 'stroke-width': fs / 7, 'paint-order': 'stroke'
       });
       t.textContent = l.t;
+      uprightAt(t, l.x, l.y);
       g.appendChild(t);
       $('gLabels').appendChild(g);
       try {
@@ -412,6 +443,7 @@
       });
       t.textContent = (p.n || '').slice(0, 4);
       t.style.pointerEvents = 'none';
+      uprightAt(t, p.x, p.y + tr * 0.34);
       g.appendChild(t);
       $('gTokens').appendChild(g);
     });
@@ -428,10 +460,19 @@
     publishHills(true);
   }
 
+  /* The button is lit only when hardpoints are actually on screen — not on a
+     map that has none placed. */
+  function syncHillsBtn() {
+    var m = curMap();
+    var on = !!(m && S.showHills && hillsFor(m.id).length);
+    $('hillsbtn').setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
+
   function renderHills() {
     var g = $('gHills');
     if (!g) return;
     g.textContent = '';
+    syncHillsBtn();
     var m = curMap();
     if (!m || (!S.showHills && !S.hillEdit)) return;
     var pts = hillsFor(m.id);
@@ -449,6 +490,7 @@
       });
       t.textContent = 'P' + (i + 1);
       t.style.pointerEvents = 'none';
+      uprightAt(t, p.x, p.y);
       box.appendChild(t);
       if (p.n) {
         var nm = svgEl('text', {
@@ -458,6 +500,7 @@
         });
         nm.textContent = p.n;
         nm.style.pointerEvents = 'none';
+        uprightAt(nm, p.x, p.y + r * 1.5);
         box.appendChild(nm);
       }
       g.appendChild(box);
@@ -497,7 +540,6 @@
 
   function setHillEdit(on) {
     S.hillEdit = on;
-    $('hillsbtn').setAttribute('aria-pressed', S.showHills ? 'true' : 'false');
     if (on) {
       S.showHills = true;
       var m = curMap();
@@ -629,9 +671,7 @@
         gest = { type: 'draglabel', id: hitEl.getAttribute('data-id'), moved: false };
       } else {
         gest = {
-          type: 'pan', c0: { x: e.clientX, y: e.clientY },
-          view0: { x: S.view.x, y: S.view.y, w: S.view.w, h: S.view.h },
-          at: p, moved: false
+          type: 'pan', c0: { x: e.clientX, y: e.clientY }, grab: p, moved: false
         };
         clearTimeout(S.holdTimer);
         S.holdTimer = setTimeout(function () {
@@ -693,24 +733,27 @@
       var h = mapH();
       var w = clamp(gest.view0.w * scale, 110, MAPW * 2.2);
       var hh = w * (gest.view0.h / gest.view0.w);
-      var st = $('stage');
       var mid = { x: (a.x + c.x) / 2, y: (a.y + c.y) / 2 };
-      var r = st.getBoundingClientRect();
-      var fx = (mid.x - r.left) / r.width, fy = (mid.y - r.top) / r.height;
-      setView({ x: gest.mid0.x - w * fx, y: gest.mid0.y - hh * fy, w: w, h: hh });
+      setView({ x: S.view.x, y: S.view.y, w: w, h: hh });
+      var after = toSvg(mid.x, mid.y);
+      setView({
+        x: S.view.x + (gest.mid0.x - after.x), y: S.view.y + (gest.mid0.y - after.y),
+        w: w, h: hh
+      });
       render();
       return;
     }
 
     if (gest.type === 'pan') {
-      var m2 = $('board').getScreenCTM();
-      if (!m2) return;
-      var dx = (e.clientX - gest.c0.x) / m2.a, dy = (e.clientY - gest.c0.y) / m2.d;
       if (!gest.moved && Math.abs(e.clientX - gest.c0.x) + Math.abs(e.clientY - gest.c0.y) > 8) {
         gest.moved = true;
         clearTimeout(S.holdTimer);
       }
-      setView({ x: gest.view0.x - dx, y: gest.view0.y - dy, w: gest.view0.w, h: gest.view0.h });
+      var now = toSvg(e.clientX, e.clientY);
+      setView({
+        x: S.view.x + (gest.grab.x - now.x), y: S.view.y + (gest.grab.y - now.y),
+        w: S.view.w, h: S.view.h
+      });
       return;
     }
 
@@ -1240,41 +1283,30 @@
   }
 
   function showPing(x, y, name, colour) {
-    var g = svgEl('g', {});
     var r0 = clamp(S.view.w / 26, 10, 46);
-    var ring = svgEl('circle', {
-      cx: x, cy: y, r: r0 * 0.35, fill: 'none',
-      stroke: colour, 'stroke-width': r0 / 5
+    /* Everything sits in a translated group so the ring can scale about its
+       own centre, and each ping animates from the moment it is added. */
+    var g = svgEl('g', {
+      transform: 'translate(' + x + ',' + y + ')' + (isFlipped() ? ' rotate(180)' : '')
     });
-    ring.appendChild(svgEl('animate', {
-      attributeName: 'r', from: r0 * 0.35, to: r0 * 1.5, dur: '1.2s',
-      repeatCount: '4', fill: 'freeze'
-    }));
-    ring.appendChild(svgEl('animate', {
-      attributeName: 'opacity', from: '1', to: '0', dur: '1.2s',
-      repeatCount: '4', fill: 'freeze'
-    }));
-    var dot = svgEl('circle', { cx: x, cy: y, r: r0 * 0.22, fill: colour });
-    /* The marker holds steady while the ring pulses, then fades at the end,
-       so it stays readable long enough to talk about. */
-    dot.appendChild(svgEl('animate', {
-      attributeName: 'opacity', from: '1', to: '0', begin: '4.1s',
-      dur: '0.8s', fill: 'freeze'
-    }));
-    g.appendChild(ring); g.appendChild(dot);
+    var ring = svgEl('circle', {
+      cx: 0, cy: 0, r: r0, fill: 'none', stroke: colour, 'stroke-width': r0 / 5
+    });
+    ring.setAttribute('class', 'sb-ring');
+    var body = svgEl('g', {});
+    body.setAttribute('class', 'sb-hold');
+    body.appendChild(svgEl('circle', { cx: 0, cy: 0, r: r0 * 0.22, fill: colour }));
     if (name) {
       var t = svgEl('text', {
-        x: x, y: y - r0 * 0.75, 'text-anchor': 'middle',
+        x: 0, y: -r0 * 0.75, 'text-anchor': 'middle',
         'font-size': r0 * 0.62, 'font-weight': '600', fill: colour,
         stroke: '#0a0c10', 'stroke-width': r0 / 9, 'paint-order': 'stroke'
       });
       t.textContent = name;
-      t.appendChild(svgEl('animate', {
-        attributeName: 'opacity', from: '1', to: '0', begin: '4.1s',
-        dur: '0.8s', fill: 'freeze'
-      }));
-      g.appendChild(t);
+      body.appendChild(t);
     }
+    g.appendChild(ring);
+    g.appendChild(body);
     $('gPings').appendChild(g);
     setTimeout(function () { if (g.parentNode) g.parentNode.removeChild(g); }, 5000);
   }
@@ -1750,12 +1782,16 @@
     renderRoomState();
     var n = Object.keys(S.members).length;
     var btn = $('livebtn');
+    /* Just a dot and a headcount — the word "Live" was eating a third of the
+       bar and truncating the setup name. Hidden entirely when on your own. */
     if (S.room) {
       btn.classList.add('on');
-      $('liven').textContent = 'Live · ' + (n + 1);
+      btn.style.display = '';
+      $('liven').textContent = String(n + 1);
+      btn.setAttribute('aria-label', 'Live room, ' + (n + 1) + ' here');
     } else {
       btn.classList.remove('on');
-      $('liven').textContent = 'Solo';
+      btn.style.display = 'none';
     }
     var box = $('members');
     box.textContent = '';
@@ -1874,6 +1910,22 @@
       subHills();
       setTimeout(function () { publishHills(); }, 1900);
 
+      /* Nothing in the UI sets relays any more, so recover by hand here: if
+         a non-default list reaches nothing, fall back and reconnect once. */
+      if (S.relayFallback) clearTimeout(S.relayFallback);
+      S.relayFallback = setTimeout(function () {
+        S.relayFallback = null;
+        if (!S.pool || !S.room) return;
+        if (S.pool.status().up > 0) return;
+        var isDefault = S.relays.length === DEFAULT_RELAYS.length &&
+          S.relays.every(function (u, i) { return u === DEFAULT_RELAYS[i]; });
+        if (isDefault) return;
+        S.relays = DEFAULT_RELAYS.slice();
+        saveMeta();
+        toast('Reconnecting…');
+        joinRoom(S.room, true);
+      }, 20000);
+
       S.beat = setInterval(function () { sendBeat(); prune(); }, BEAT_MS);
       setTimeout(sendBeat, 900);
 
@@ -1910,6 +1962,7 @@
     if (S.sendTimer) { clearTimeout(S.sendTimer); S.sendTimer = null; }
     if (S.wantTimer) { clearInterval(S.wantTimer); S.wantTimer = null; }
     if (S.rxTimer) { clearTimeout(S.rxTimer); S.rxTimer = null; }
+    if (S.relayFallback) { clearTimeout(S.relayFallback); S.relayFallback = null; }
     S.room = ''; S.roomSk = null; S.roomPub = null; S.members = {};
     if (S.mapId) {
       var own = boardsOf(S.mapId);
@@ -1939,7 +1992,6 @@
     }
     if (t === 'arrow' || t === 'mark' || t === 'text') {
       sw.classList.add('show');
-      $('swlab').textContent = t === 'arrow' ? 'Arrow colour' : t === 'mark' ? 'Mark colour' : 'Text colour';
     } else {
       sw.classList.remove('show');
     }
@@ -1960,9 +2012,11 @@
       var w = clamp(S.view.w * f, 110, MAPW * 2.2);
       var hh = w * (S.view.h / S.view.w);
       var p = toSvg(e.clientX, e.clientY);
-      var r = stage.getBoundingClientRect();
-      var fx = (e.clientX - r.left) / r.width, fy = (e.clientY - r.top) / r.height;
-      setView({ x: p.x - w * fx, y: p.y - hh * fy, w: w, h: hh });
+      setView({ x: S.view.x, y: S.view.y, w: w, h: hh });
+      var after2 = toSvg(e.clientX, e.clientY);
+      setView({
+        x: S.view.x + (p.x - after2.x), y: S.view.y + (p.y - after2.y), w: w, h: hh
+      });
       render();
     }, { passive: false });
 
@@ -1997,7 +2051,6 @@
         return;
       }
       S.showHills = !S.showHills;
-      this.setAttribute('aria-pressed', S.showHills ? 'true' : 'false');
       render(); saveMeta();
       toast(S.showHills ? 'Hardpoints shown' : 'Hardpoints hidden');
     });
@@ -2006,6 +2059,15 @@
       if (!curMap()) { toast('Pick a map first'); return; }
       closeSheet('menu');
       setHillEdit(true);
+    });
+
+    $('flipbtn').addEventListener('click', function () {
+      var m = curMap();
+      if (!m) { toast('Pick a map first'); return; }
+      S.flips[m.id] = !S.flips[m.id];
+      render();
+      saveMeta();
+      toast(S.flips[m.id] ? 'Map flipped' : 'Map back to normal');
     });
 
     $('wipe').addEventListener('click', function () {
@@ -2218,21 +2280,6 @@
       publishMap(true);
     });
 
-    $('relays').addEventListener('focus', function () { this.select && 0; });
-    $('saverelays').addEventListener('click', function () {
-      var list = $('relays').value.split(/[\s,]+/).map(function (s) { return s.trim(); })
-        .filter(function (s) { return /^wss?:\/\//.test(s); });
-      if (!list.length) { toast('Need at least one wss:// relay'); return; }
-      S.relays = list; saveMeta();
-      $('relays').value = list.join('\n');
-      toast('Relays saved');
-      if (S.room) joinRoom(S.room);
-    });
-    $('defrelays').addEventListener('click', function () {
-      S.relays = DEFAULT_RELAYS.slice();
-      $('relays').value = S.relays.join('\n');
-      saveMeta(); toast('Defaults restored');
-    });
 
     /* Escape hatch: wipe the caches and the worker, then reload from the
        network. A phone stuck on an old build has no other way back. */
@@ -2463,10 +2510,16 @@
         if (!S.relays.length) S.relays = DEFAULT_RELAYS.slice();
         S.colour = st.colour || S.colour;
         if (st.showHills === false) S.showHills = false;
+        if (st.flips) S.flips = st.flips;
         S.clientId = st.clientId || S.clientId;
         if (st.mapId && S.maps.some(function (m) { return m.id === st.mapId; })) S.mapId = st.mapId;
         if (st.boardId && S.boards.some(function (b) { return b.id === st.boardId; })) S.boardId = st.boardId;
       }
+      try {
+        var over = localStorage.getItem('sb-test-relay');   // used by the test harness
+        if (over) S.relays = over.split(/[\s,]+/).filter(Boolean);
+      } catch (e) {}
+
       if (!S.mapId && S.maps.length) S.mapId = S.maps[0].id;
       if (S.mapId) {
         var bl = boardsOf(S.mapId);
@@ -2476,8 +2529,6 @@
       }
 
       $('nick').value = S.nick;
-      $('hillsbtn').setAttribute('aria-pressed', S.showHills ? 'true' : 'false');
-      $('relays').value = S.relays.join('\n');
       $('menusub').textContent = 'Version ' + VERSION + ' · everything saves on this phone.';
       renderDiag();
       if (S.bundledFailed && navigator.onLine !== false) {
