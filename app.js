@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2.5';
+  var VERSION = '2.6';
   /* Write-friendly public relays. relay.nostr.band is a search aggregator and
      nostr.wine is paid, so neither accepts writes from a fresh key. */
   var DEFAULT_RELAYS = [
@@ -1093,16 +1093,21 @@
       cx: x, cy: y, r: r0 * 0.35, fill: 'none',
       stroke: colour, 'stroke-width': r0 / 5
     });
-    var a1 = svgEl('animate', {
-      attributeName: 'r', from: r0 * 0.35, to: r0 * 1.5, dur: '1.1s',
-      repeatCount: '2', fill: 'freeze'
-    });
-    var a2 = svgEl('animate', {
-      attributeName: 'opacity', from: '1', to: '0', dur: '1.1s',
-      repeatCount: '2', fill: 'freeze'
-    });
-    ring.appendChild(a1); ring.appendChild(a2);
+    ring.appendChild(svgEl('animate', {
+      attributeName: 'r', from: r0 * 0.35, to: r0 * 1.5, dur: '1.2s',
+      repeatCount: '4', fill: 'freeze'
+    }));
+    ring.appendChild(svgEl('animate', {
+      attributeName: 'opacity', from: '1', to: '0', dur: '1.2s',
+      repeatCount: '4', fill: 'freeze'
+    }));
     var dot = svgEl('circle', { cx: x, cy: y, r: r0 * 0.22, fill: colour });
+    /* The marker holds steady while the ring pulses, then fades at the end,
+       so it stays readable long enough to talk about. */
+    dot.appendChild(svgEl('animate', {
+      attributeName: 'opacity', from: '1', to: '0', begin: '4.1s',
+      dur: '0.8s', fill: 'freeze'
+    }));
     g.appendChild(ring); g.appendChild(dot);
     if (name) {
       var t = svgEl('text', {
@@ -1111,10 +1116,14 @@
         stroke: '#0a0c10', 'stroke-width': r0 / 9, 'paint-order': 'stroke'
       });
       t.textContent = name;
+      t.appendChild(svgEl('animate', {
+        attributeName: 'opacity', from: '1', to: '0', begin: '4.1s',
+        dur: '0.8s', fill: 'freeze'
+      }));
       g.appendChild(t);
     }
     $('gPings').appendChild(g);
-    setTimeout(function () { if (g.parentNode) g.parentNode.removeChild(g); }, 2400);
+    setTimeout(function () { if (g.parentNode) g.parentNode.removeChild(g); }, 5000);
   }
 
   function sendPing(p) {

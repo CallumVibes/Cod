@@ -1,4 +1,4 @@
-var CACHE = 'stratboard-v20';
+var CACHE = 'stratboard-v21';
 var ASSETS = [
   './',
   './index.html',
