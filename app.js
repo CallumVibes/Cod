@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '2.9';
+  var VERSION = '3.0';
   /* Write-friendly public relays. relay.nostr.band is a search aggregator and
      nostr.wine is paid, so neither accepts writes from a fresh key. */
   var DEFAULT_RELAYS = [
@@ -1901,6 +1901,15 @@
     $('fit').addEventListener('click', function () { fitView(); render(); });
     $('hillsbtn').addEventListener('click', function () {
       if (S.hillEdit) { setHillEdit(false); toast('Hardpoints saved'); return; }
+      var m = curMap();
+      if (!m) { toast('Pick a map first'); return; }
+      /* Nothing to show means nothing has been placed on this map yet, so
+         start placing rather than claiming to have shown something. */
+      if (!hillsFor(m.id).length) {
+        setHillEdit(true);
+        toast('No hardpoints on ' + m.name + ' yet — place them');
+        return;
+      }
       S.showHills = !S.showHills;
       this.setAttribute('aria-pressed', S.showHills ? 'true' : 'false');
       render(); saveMeta();
