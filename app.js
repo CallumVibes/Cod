@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '1.8';
+  var VERSION = '1.9';
   /* Write-friendly public relays. relay.nostr.band is a search aggregator and
      nostr.wine is paid, so neither accepts writes from a fresh key. */
   var DEFAULT_RELAYS = [
@@ -700,9 +700,14 @@
      launch rather than stored, so the list always matches the deployed build,
      and their ids are stable so setups and live rooms line up across phones. */
   function loadBundled() {
-    return fetch('maps/index.json', { cache: 'no-cache' }).then(function (r) {
-      if (!r.ok) throw new Error('no index');
-      return r.json();
+    function get(opts) {
+      return fetch('maps/index.json', opts).then(function (r) {
+        if (!r.ok) throw new Error('http ' + r.status);
+        return r.json();
+      });
+    }
+    return get({ cache: 'no-cache' }).catch(function () {
+      return get({});                       // some caches reject the no-cache hint
     }).then(function (list) {
       return (list || []).map(function (e) {
         var rec = {
@@ -713,7 +718,10 @@
         attachUrl(rec);
         return rec;
       });
-    }).catch(function () { return []; });
+    }).catch(function () {
+      S.bundledFailed = true;
+      return [];
+    });
   }
 
   function addMapFromFile(file, presetName) {
@@ -1751,6 +1759,27 @@
       saveMeta(); toast('Defaults restored');
     });
 
+    /* Escape hatch: wipe the caches and the worker, then reload from the
+       network. A phone stuck on an old build has no other way back. */
+    $('forceupdate').addEventListener('click', function () {
+      toast('Fetching the latest build…');
+      var step = Promise.resolve();
+      if (window.caches && caches.keys) {
+        step = caches.keys().then(function (keys) {
+          return Promise.all(keys.map(function (k) { return caches.delete(k); }));
+        }).catch(function () {});
+      }
+      step.then(function () {
+        if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
+          return navigator.serviceWorker.getRegistrations().then(function (regs) {
+            return Promise.all(regs.map(function (r) { return r.unregister(); }));
+          }).catch(function () {});
+        }
+      }).then(function () {
+        setTimeout(function () { location.reload(); }, 400);
+      });
+    });
+
     $('aboutstore').addEventListener('click', function () {
       if (!navigator.storage || !navigator.storage.estimate) {
         ask({ title: 'Storage', body: S.maps.length + ' maps, ' + S.boards.length + ' setups.', okText: 'Done' });
@@ -1914,6 +1943,11 @@
       $('relays').value = S.relays.join('\n');
       $('menusub').textContent = 'Version ' + VERSION + ' · everything saves on this phone.';
       renderDiag();
+      if (S.bundledFailed && navigator.onLine !== false) {
+        setTimeout(function () {
+          banner('Built-in maps did not load — try Force update in the menu.');
+        }, 1200);
+      }
       if (dropped.length) {
         saveMeta();
         setTimeout(function () {
