@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '5.3';
+  var VERSION = '6.0';
   /* Write-friendly public relays. relay.nostr.band is a search aggregator and
      nostr.wine is paid, so neither accepts writes from a fresh key. */
   var DEFAULT_RELAYS = [
@@ -203,6 +203,7 @@
     boardId: null,
     tool: 'move',
     markKind: 'x',
+    pingKind: '',
     arrowOwn: '',
     onlyOwn: false,
     colour: '#f5b708',
@@ -210,7 +211,7 @@
     objUrl: null,
     undo: [],
     redo: [],
-    nick: '',
+    role: '',
     room: '',
     relays: DEFAULT_RELAYS.slice(),
     clientId: uid(),
@@ -232,6 +233,7 @@
     wantTimer: null,
     rxTimer: null,
     relayFallback: null,
+    roomTag: '',
     stamps: {},
     lastRx: 0,
     seenBoard: {},
@@ -359,7 +361,7 @@
   function saveMeta() {
     if (S.mapId && S.boardId) S.lastSetup[S.mapId] = S.boardId;   // where this map was left
     dbPut('meta', {
-      k: 'settings', mapId: S.mapId, boardId: S.boardId, nick: S.nick, showHills: S.showHills,
+      k: 'settings', mapId: S.mapId, boardId: S.boardId, role: S.role, showHills: S.showHills,
       flips: S.flips, rots: S.rots, hidden: S.hidden, lastSetup: S.lastSetup,
       room: S.room, relays: S.relays, colour: S.colour, clientId: S.clientId
     });
@@ -402,6 +404,94 @@
       n++;
     });
     return out;
+  }
+
+  /* A ping can say what it is as well as where: an enemy seen, a bomb. */
+  var PINGS = {
+    enemy: { c: '#ef4444', label: 'Enemy' },
+    bomb:  { c: '#f59e0b', label: 'Bomb' }
+  };
+
+  var ROLES = ['AR', 'Sub', 'Flex', 'Anch'];
+  var WATCHING = 'Watching';
+
+  function myLabel() { return S.role || WATCHING; }
+  /* On your own there is no team to tell apart, so a ping just says "You". */
+  function myPingLabel() { return S.role || (S.room ? WATCHING : 'You'); }
+
+  /* Which roles teammates are already holding. */
+  function rolesTaken() {
+    var out = {};
+    Object.keys(S.members).forEach(function (id) {
+      if (id !== S.clientId && S.members[id] && S.members[id].n) out[S.members[id].n] = true;
+    });
+    return out;
+  }
+
+  function setRole(r, quiet) {
+    S.role = r === WATCHING ? '' : r;
+    saveMeta();
+    renderRoles();
+    renderMembers();
+    if (S.pool) sendBeat();
+    if (!quiet) toast(S.role ? 'You are ' + S.role : 'Watching only');
+  }
+
+  /* Nobody should have to pick before they can start, so on joining we take
+     a free role and let it be changed after. */
+  function claimRole() {
+    if (S.role) return;
+    var taken = rolesTaken();
+    for (var i = 0; i < ROLES.length; i++) {
+      if (!taken[ROLES[i]]) { setRole(ROLES[i], true); return; }
+    }
+  }
+
+  var rolesTimer = null;
+  function renderRolesSoon() {
+    clearTimeout(rolesTimer);
+    rolesTimer = setTimeout(renderRoles, 60);
+  }
+
+  function resolveRole() {
+    if (!S.role || !S.room) return;
+    var clash = null;
+    Object.keys(S.members).forEach(function (id) {
+      if (id !== S.clientId && S.members[id] && S.members[id].n === S.role) clash = id;
+    });
+    if (!clash) return;
+    /* Whoever's id sorts lower keeps it, so both phones reach the same
+       answer without having to agree on anything first. */
+    if (String(S.clientId) < String(clash)) return;
+    var taken = rolesTaken();
+    for (var i = 0; i < ROLES.length; i++) {
+      if (!taken[ROLES[i]]) { setRole(ROLES[i], true); return; }
+    }
+    setRole(WATCHING, true);
+  }
+
+  function renderRoles() {
+    var box = $('roles');
+    if (!box) return;
+    box.textContent = '';
+    var taken = rolesTaken();
+    ROLES.concat([WATCHING]).forEach(function (r) {
+      var btn = document.createElement('button');
+      btn.textContent = r;
+      var mine = myLabel() === r;
+      btn.setAttribute('aria-pressed', mine ? 'true' : 'false');
+      if (mine) { btn.style.background = 'var(--blue)'; btn.style.borderColor = 'var(--blue)';
+                  btn.style.color = '#fff'; }
+      else if (taken[r]) { btn.style.opacity = '.55'; }
+      btn.addEventListener('click', function () { setRole(r); });
+      box.appendChild(btn);
+    });
+    var note = $('roleclash');
+    if (note) {
+      note.textContent = (S.role && taken[S.role])
+        ? 'Someone else is also ' + S.role + ' — one of you should switch.'
+        : '';
+    }
   }
 
   var UTIL = {
@@ -905,7 +995,7 @@
     if (!m) return;
     /* The floating controls sit inside the board, so their taps bubble here.
        Without this, pressing Undo with the Mark tool active dropped a mark. */
-    if (e.target.closest && e.target.closest('#float, #banner, #blank, #swatch, #kinds, #who, #acts')) return;
+    if (e.target.closest && e.target.closest('#float, #banner, #blank, #swatch, #kinds, #who, #acts, #pings')) return;
 
     /* Locked rooms stay pannable and pingable — just not editable. */
     if (!canEdit() && S.tool !== 'ping' && S.tool !== 'move') { denyEdit(); return; }
@@ -1446,7 +1536,7 @@
     }
     var pack = {
       app: 'stratboard', kind: 'backup', v: 2, made: new Date().toISOString(),
-      prefs: { nick: S.nick, hidden: S.hidden, flips: S.flips, showHills: S.showHills },
+      prefs: { role: S.role, hidden: S.hidden, flips: S.flips, showHills: S.showHills },
       /* Built-in maps ship with the app, so a pack only carries your own. */
       hills: S.maps.map(function (m) { return { map: m.name, pts: hillsFor(m.id) }; })
         .filter(function (h) { return h.pts.length; }),
@@ -1488,7 +1578,7 @@
       if (!pack || pack.app !== 'stratboard') { toast('That is not a Strat Board backup'); return; }
       pack.maps = pack.maps || [];
       if (pack.prefs) {
-        if (pack.prefs.nick) { S.nick = pack.prefs.nick; $('nick').value = S.nick; }
+        if (pack.prefs.role) { S.role = pack.prefs.role; renderRoles(); }
         if (pack.prefs.hidden) S.hidden = pack.prefs.hidden;
         if (pack.prefs.flips) S.flips = pack.prefs.flips;
         if (typeof pack.prefs.showHills === 'boolean') S.showHills = pack.prefs.showHills;
@@ -1552,7 +1642,7 @@
     var t = (ev.tags || []).filter(function (x) { return x[0] === 'd'; })[0];
     return t ? t[1] : '';
   }
-  function roomTag() { return 'stratboard:' + S.room; }
+  function roomTag() { return 'stratboard:' + (S.roomTag || S.room); }
   function mapMetaTag() { return roomTag() + ':map'; }
   /* Chunk addresses carry a per-image id. Without it a second map reuses the
      first one's addresses, and a receiver reassembles a mixture of the two. */
@@ -1693,7 +1783,7 @@
   }
 
   function sendPing(p) {
-    var m = curMap(), now = Date.now();
+    var m = curMap(), now = Date.now(), pk = PINGS[S.pingKind];
     /* A ping is for pointing at something, not for drumming on the screen. */
     function easeOff() {
       if (now - (S.pingNag || 0) > 4000) { S.pingNag = now; toast('Easy with the pings'); }
@@ -1703,12 +1793,13 @@
     if (S.pingBurst.length >= 4) { easeOff(); return; }
     S.pingBurst.push(now);
     S.pingAt = now;
-    showPing(p.x, p.y, S.nick || 'You', colourFor(S.clientId), S.clientId);
+    showPing(p.x, p.y, pk ? pk.label + ' · ' + myPingLabel() : myPingLabel(),
+             pk ? pk.c : colourFor(S.clientId), S.clientId);
     if (!S.pool || !S.roomSk) return;
     NostrLite.finalize({
       kind: 20003, tags: [['d', roomTag()]],
       content: JSON.stringify({
-        c: S.clientId, n: S.nick || 'Player',
+        c: S.clientId, n: myLabel(), k: S.pingKind || undefined,
         x: Math.round(p.x), y: Math.round(p.y), map: m ? m.name : ''
       })
     }, S.roomSk).then(function (ev) { if (S.pool) S.pool.publish(ev); }).catch(function () {});
@@ -1860,7 +1951,7 @@
   function roomStatePayload() {
     var m = curMap();
     return JSON.stringify({
-      v: 2, by: S.clientId, n: S.nick || 'Player', map: m ? m.name : '',
+      v: 2, by: S.clientId, n: myLabel(), map: m ? m.name : '',
       host: S.host || S.clientId, locked: !!S.locked,
       flip: rotOf() === 2, rot: rotOf(),
       active: S.boardId,
@@ -1972,8 +2063,8 @@
     if (!S.pool || !S.roomSk) return;
     var ev = {
       kind: 20001,
-      tags: [['d', 'stratboard:' + S.room]],
-      content: JSON.stringify({ c: S.clientId, n: S.nick || 'Player' })
+      tags: [['d', roomTag()]],
+      content: JSON.stringify({ c: S.clientId, n: myLabel() })
     };
     NostrLite.finalize(ev, S.roomSk).then(function (signed) {
       S.pool.publish(signed);
@@ -2223,7 +2314,10 @@
       var m = curMap();
       if (data.map && m && data.map !== m.name) return;   // pointing at another map
       S.members[data.c] = { n: data.n || 'Player', t: Date.now() };
-      showPing(data.x, data.y, data.n || 'Player', colourFor(data.c), data.c || data.n);
+      var inc = PINGS[data.k];
+      showPing(data.x, data.y,
+               inc ? inc.label + ' · ' + (data.n || WATCHING) : (data.n || WATCHING),
+               inc ? inc.c : colourFor(data.c), data.c || data.n);
       renderMembers();
       return;
     }
@@ -2235,10 +2329,13 @@
     if (ev.kind === 20001) {
       if (!data.c || data.c === S.clientId) return;
       var isNew = !S.members[data.c];
-      S.members[data.c] = { n: data.n || 'Player', t: Date.now() };
+      S.members[data.c] = { n: data.n || WATCHING, t: Date.now() };
       renderMembers();
-      /* someone just turned up: make sure the map is on the relay for them */
-      if (isNew && curMap()) setTimeout(function () { publishMap(true); }, 700);
+      if (isNew) {
+        setTimeout(sendBeat, 150 + Math.random() * 400);   // so they see us too
+        if (curMap()) setTimeout(function () { publishMap(true); }, 700);
+      }
+      resolveRole();
       return;
     }
     if (ev.kind !== 30078) return;
@@ -2360,6 +2457,7 @@
   }
 
   function renderMembers() {
+    renderRolesSoon();
     renderRoomState();
     renderLock();
     var n = Object.keys(S.members).length;
@@ -2396,7 +2494,7 @@
   function diagLines() {
     var out = [];
     out.push('Strat Board v' + VERSION);
-    out.push('room: ' + (S.room || 'none') + '   you: ' + (S.nick || 'unnamed'));
+    out.push('room: ' + (S.room || 'none') + '   you: ' + myLabel());
     out.push('others seen: ' + Object.keys(S.members).length);
     var m = curMap(), b = curBoard();
     out.push('map: ' + (m ? m.name : 'none') + '   setup: ' + (b ? b.name : 'none') +
@@ -2462,8 +2560,11 @@
     }
     S.undo.length = 0; S.redo.length = 0;
 
-    NostrLite.keyFromCode(code).then(function (sk) {
+    Promise.all([NostrLite.keyFromCode(code), NostrLite.tagFromCode(code)])
+      .then(function (pair) {
+      var sk = pair[0];
       S.roomSk = sk;
+      S.roomTag = pair[1];          // addresses events without naming the code
       S.roomPub = NostrLite.bytesToHex(NostrLite.pubkeyFromSeckey(sk));
       S.pool = new NostrLite.Pool(S.relays, {
         onevent: onEvent,
@@ -2519,6 +2620,7 @@
       }, 20000);
 
       S.lastRx = Date.now();
+      setTimeout(claimRole, 3000);     // once the others have said hello
       S.beat = setInterval(function () {
         sendBeat();
         prune();
@@ -2562,6 +2664,7 @@
   }
 
   function leaveRoom(quiet) {
+    S.roomTag = '';
     if (S.pool) { S.pool.close(); S.pool = null; }
     if (S.beat) { clearInterval(S.beat); S.beat = null; }
     if (S.sendTimer) { clearTimeout(S.sendTimer); S.sendTimer = null; }
@@ -2647,6 +2750,7 @@
     }
     var sw = $('swatch'), kd = $('kinds'), wh = $('who'), ac = $('acts');
     if (ac) ac.classList.toggle('show', t === 'erase');
+    if ($('pings')) $('pings').classList.toggle('show', t === 'ping');
     if (wh) {
       var showWho = t === 'arrow';
       /* Showing one player alone is a way of reading the board while you
@@ -2664,6 +2768,7 @@
     }
     if (t === 'ping') {
       sw.classList.remove('show');
+      if ($('pings')) $('pings').classList.add('show');
       stepFloat();
       banner('Tap the map to ping, or hold the map in Move.', 3000);
       return;
@@ -2689,7 +2794,7 @@
       if (el) el.classList.toggle('under', !!over);
     });
     var n = 0;
-    ['swatch', 'kinds', 'who', 'acts'].forEach(function (id) {
+    ['swatch', 'kinds', 'who', 'acts', 'pings'].forEach(function (id) {
       var el = $(id);
       if (el && el.classList.contains('show')) n++;
     });
@@ -2791,6 +2896,15 @@
         var btn = $(pair[0]);
         if (btn) btn.addEventListener('click', function () { $(pair[1]).click(); });
       });
+
+    Array.prototype.forEach.call(document.querySelectorAll('#pings .kd'), function (btn) {
+      btn.addEventListener('click', function () {
+        S.pingKind = btn.getAttribute('data-ping') || '';
+        Array.prototype.forEach.call(document.querySelectorAll('#pings .kd'), function (o) {
+          o.setAttribute('aria-pressed', o === btn ? 'true' : 'false');
+        });
+      });
+    });
 
     $('flipbtn').addEventListener('click', function () {
       var m = curMap();
@@ -3016,11 +3130,6 @@
       });
     });
 
-    $('nick').addEventListener('change', function () {
-      S.nick = this.value.trim().slice(0, 14);
-      saveMeta(); renderMembers();
-      if (S.pool) sendBeat();
-    });
     $('joinroom').addEventListener('click', function () { joinRoom($('roomcode').value); });
     $('roomcode').addEventListener('keydown', function (e) {
       if (e.key === 'Enter') { this.blur(); joinRoom(this.value); }
@@ -3342,7 +3451,7 @@
       var st = res[2];
       var dropped = [];
       if (st) {
-        S.nick = st.nick || '';
+        S.role = st.role || '';
         S.relays = (st.relays && st.relays.length) ? st.relays : DEFAULT_RELAYS.slice();
         /* Drop relays that refuse writes, and top the list back up. */
         S.relays = S.relays.filter(function (u) {
@@ -3381,7 +3490,7 @@
         }
       }
 
-      $('nick').value = S.nick;
+      renderRoles();
       $('menusub').textContent = 'Version ' + VERSION + ' · everything saves on this phone.';
       renderDiag();
       if (S.bundledFailed && navigator.onLine !== false) {

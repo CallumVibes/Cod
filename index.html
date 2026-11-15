@@ -68,12 +68,12 @@ justify-content:center;gap:14px;padding:26px;text-align:center;color:var(--dim);
 #blank h2{margin:0;font-size:17px;font-weight:500;color:var(--text)}
 #float{position:absolute;top:9px;right:9px;display:flex;flex-direction:column;gap:7px;
 transition:top .12s}
-#stage.row1 #float{top:55px}
-#stage.row2 #float{top:101px}
+#stage.row1 #float,#stage.row1 #banner{top:55px}
+#stage.row2 #float,#stage.row2 #banner{top:101px}
 #float button[aria-pressed="true"]{background:rgba(245,183,8,.18);border-color:#f5b708;color:#f5b708}
 #float button{width:40px;min-width:40px;height:40px;min-height:40px;padding:0;
 background:rgba(22,26,33,.9);border-color:#333b48;font-size:17px}
-#banner{position:absolute;left:9px;right:58px;top:9px;z-index:4;background:rgba(22,26,33,.94);
+#banner{position:absolute;left:9px;right:58px;top:9px;z-index:4;transition:top .12s;background:rgba(22,26,33,.94);
 border:1px solid var(--line);border-radius:var(--r);padding:8px 11px;font-size:13px;
 color:var(--dim);display:none}
 #banner.show{display:block}
@@ -107,6 +107,17 @@ color:var(--dim);white-space:nowrap}
 #kinds.under{top:49px}
 #kinds{overflow-x:auto}
 /* the tidy-up actions, on the Erase tool */
+#pings{display:none;gap:6px;padding:7px 8px;align-items:center;justify-content:center;
+position:absolute;left:0;right:0;top:0;z-index:5;background:rgba(13,15,19,.82);
+border-bottom:1px solid var(--line);pointer-events:none}
+#pings.show{display:flex}
+#pings .kd{pointer-events:auto;height:32px;min-height:32px;padding:0 10px;font-size:11px;
+color:var(--dim);flex:none}
+#pings .kd[aria-pressed="true"]{background:var(--blue);border-color:var(--blue);color:#fff}
+#pings .kd.pEnemy{border-color:#ef4444;color:#f87171}
+#pings .kd.pEnemy[aria-pressed="true"]{background:#ef4444;border-color:#ef4444;color:#fff}
+#pings .kd.pBomb{border-color:#f59e0b;color:#fbbf24}
+#pings .kd.pBomb[aria-pressed="true"]{background:#f59e0b;border-color:#f59e0b;color:#fff}
 #acts{display:none;gap:6px;padding:7px 8px;align-items:center;justify-content:center;
 position:absolute;left:0;right:0;top:0;z-index:5;background:rgba(13,15,19,.82);
 border-bottom:1px solid var(--line);pointer-events:none;overflow-x:auto}
@@ -201,6 +212,11 @@ padding:10px 14px;font-size:13.5px;box-shadow:0 6px 20px rgba(0,0,0,.45);text-al
   </div>
 
   <div id="stage">
+    <div id="pings">
+    <button class="kd" data-ping="" aria-pressed="true">Ping</button>
+    <button class="kd pEnemy" data-ping="enemy" aria-pressed="false">Enemy</button>
+    <button class="kd pBomb" data-ping="bomb" aria-pressed="false">Bomb</button>
+    </div>
     <div id="acts">
     <button id="actclear">Clear drawing</button>
     <button id="actreset">Reset players</button>
@@ -309,9 +325,9 @@ padding:10px 14px;font-size:13.5px;box-shadow:0 6px 20px rgba(0,0,0,.45);text-al
 
     <div class="sect">
       <h3>Live room</h3>
-      <div class="row">
-        <input id="nick" placeholder="Your name" maxlength="14" autocomplete="off">
-      </div>
+      <div class="muted" style="margin:0 0 6px">You are</div>
+      <div id="roles" class="row" style="gap:6px;flex-wrap:wrap"></div>
+      <div id="roleclash" class="muted" style="margin:6px 0 10px"></div>
       <div id="roomstate" class="pill" style="margin:0 0 10px">Not in a room</div>
       <div class="row">
         <input id="roomcode" placeholder="Room code" maxlength="40" autocomplete="off" autocapitalize="none" spellcheck="false">

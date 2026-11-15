@@ -190,6 +190,13 @@ var NostrLite = (function () {
 
   /* Derive a room keypair from a human room code, so everyone who knows the
      code can read and write the room without any account. */
+  /* A short fingerprint of the room code, for addressing events without
+     writing the code itself across a public relay. */
+  function tagFromCode(code) {
+    var data = new TextEncoder().encode('stratboard:tag:v1:' + code.trim().toLowerCase());
+    return sha256(data).then(function (h) { return bytesToHex(h).slice(0, 16); });
+  }
+
   function keyFromCode(code) {
     var data = new TextEncoder().encode('stratboard:room:v1:' + code.trim().toLowerCase());
     return sha256(data).then(function (h) {
@@ -395,6 +402,7 @@ var NostrLite = (function () {
     verify: verify,
     finalize: finalize,
     keyFromCode: keyFromCode,
+    tagFromCode: tagFromCode,
     Pool: Pool
   };
 })();

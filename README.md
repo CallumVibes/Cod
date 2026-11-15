@@ -20,7 +20,7 @@ The six tools along the bottom:
 | Tool | What it does |
 | --- | --- |
 | **Move** | Drag players around. Tap one to rename it. Hold the map to ping. |
-| **Ping** | Tap anywhere to flash a marker with your name on everyone's screen for five seconds. Nothing is saved — it is just for pointing. A few at a time, so nobody can bury the map under them. |
+| **Ping** | Tap anywhere to flash a marker on everyone's screen for five seconds. A row lets you say what it is — **Enemy** or **Bomb** — and it carries your role, so the team sees *Bomb · Sub*. Nothing is saved; a few at a time, so nobody can bury the map. |
 | **Arrow** | Draw a rotation with your finger. Pick a player first and the route is theirs — their colour, their name on it. |
 | **Mark** | Drop an X, or a piece of utility — smoke, flash, stun or frag — from the row that appears. **+Enemy** drops one of the other team wherever you tap. |
 | **Text** | Tap where you want it, type, and tap Place. Drag labels in Move mode. |
@@ -95,7 +95,17 @@ Leaving a room takes you back to that same screen.
 From then on you all see the same board. Drag a player and it moves on
 everyone's screen. Change the map and the whole team follows.
 
-The room code is the only password, so pick something nobody would guess.
+The room code is the only password, so pick something nobody would guess. It is
+never sent to the relays — they only ever see a fingerprint of it — so somebody
+would have to guess your code rather than read it off a relay.
+
+## Who you are
+
+There are no names. You pick a role in the menu — **AR, Sub, Flex, Anch** or
+**Watching** — and that is what the team sees on your pings. Joining a room
+takes a free role for you, and if two phones land on the same one they sort it
+out between themselves, so normally there is nothing to do. Nothing personal
+goes over the relays.
 
 ## Setups
 
@@ -156,3 +166,16 @@ A static site — no server, no accounts, no tracking. Your maps and setups are
 stored on your own device. Live rooms go over public [Nostr](https://nostr.com)
 relays: the room code becomes a keypair, so anyone with the code can read and
 write the room and nobody else can find it.
+
+## What the relays can see
+
+Worth knowing before you share a room around.
+
+Board contents are **not encrypted**. They are signed, so nobody can forge your
+room, but a relay operator could read what is on a board. The room code itself
+never travels — only a fingerprint of it — and there are no names, so there is
+nothing personal in any of it. The relays do see each phone's IP address, as any
+server you connect to does.
+
+Nothing on a board is worth hiding from a stranger who has no idea which game it
+belongs to, but treat it as public rather than private.
