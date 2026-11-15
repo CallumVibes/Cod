@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '3.5';
+  var VERSION = '4.1';
   /* Write-friendly public relays. relay.nostr.band is a search aggregator and
      nostr.wine is paid, so neither accepts writes from a fresh key. */
   var DEFAULT_RELAYS = [
@@ -174,6 +174,8 @@
     mapSent: false,
     roomMapName: '',
     metaWaiting: null,
+    host: '',
+    locked: false,
     wantTimer: null,
     rxTimer: null,
     relayFallback: null,
@@ -181,6 +183,7 @@
     hills: {},
     hillNames: {},
     flips: {},
+    hidden: {},
     showHills: true,
     hillEdit: false,
     busy: false
@@ -203,6 +206,13 @@
     });
   }
   function mapH() { var m = curMap(); return m ? m.h : MAPW; }
+
+  /* Maps can be hidden from the picker when they drop out of the rotation.
+     They stay in the menu so they can be brought back. */
+  function visibleMaps() {
+    var shown = S.maps.filter(function (m) { return !S.hidden[m.id]; });
+    return shown.length ? shown : S.maps;       // never leave the picker empty
+  }
 
   function newBoard(mapId, name) {
     var h = MAPW, m = null, i;
@@ -232,7 +242,7 @@
   function saveMeta() {
     dbPut('meta', {
       k: 'settings', mapId: S.mapId, boardId: S.boardId, nick: S.nick, showHills: S.showHills,
-      flips: S.flips,
+      flips: S.flips, hidden: S.hidden,
       room: S.room, relays: S.relays, colour: S.colour, clientId: S.clientId
     });
   }
@@ -251,6 +261,7 @@
     b.tokens = s.tokens; b.arrows = s.arrows; b.marks = s.marks; b.labels = s.labels;
   }
   function doUndo() {
+    if (!canEdit()) { denyEdit(); return; }
     var b = curBoard();
     if (!b || !S.undo.length) return;
     S.redo.push(JSON.stringify({ tokens: b.tokens, arrows: b.arrows, marks: b.marks, labels: b.labels }));
@@ -258,6 +269,7 @@
     render(); saveBoard(); syncUndoButtons();
   }
   function doRedo() {
+    if (!canEdit()) { denyEdit(); return; }
     var b = curBoard();
     if (!b || !S.redo.length) return;
     S.undo.push(JSON.stringify({ tokens: b.tokens, arrows: b.arrows, marks: b.marks, labels: b.labels }));
@@ -290,7 +302,7 @@
   }
 
   /* Keep the centre of the viewport over the map, so it can never be panned
-     off into empty space with nothing to pinch back to. */
+     off into empty space with no way back to it. */
   function clampView(v) {
     var h = mapH();
     v.x = clamp(v.x, -v.w / 2, MAPW - v.w / 2);
@@ -309,9 +321,18 @@
     var btn = $('flipbtn');
     if (btn) btn.setAttribute('aria-pressed', on ? 'true' : 'false');
   }
-  /* Keep a text label upright by spinning it back about its own anchor. */
-  function uprightAt(el, x, y) {
-    if (isFlipped()) el.setAttribute('transform', 'rotate(180 ' + x + ' ' + y + ')');
+  /* Spin every label back the right way up, about the centre of its own box.
+     Pivoting on the text anchor instead threw each one off by its own height. */
+  function uprightTexts(root) {
+    if (!isFlipped() || !root) return;
+    var ts = root.querySelectorAll('text');
+    for (var i = 0; i < ts.length; i++) {
+      try {
+        var bb = ts[i].getBBox();
+        ts[i].setAttribute('transform',
+          'rotate(180 ' + (bb.x + bb.width / 2) + ' ' + (bb.y + bb.height / 2) + ')');
+      } catch (e) {}
+    }
   }
 
   function setView(v) {
@@ -415,7 +436,6 @@
         stroke: '#0a0c10', 'stroke-width': fs / 7, 'paint-order': 'stroke'
       });
       t.textContent = l.t;
-      uprightAt(t, l.x, l.y);
       g.appendChild(t);
       $('gLabels').appendChild(g);
       try {
@@ -443,10 +463,11 @@
       });
       t.textContent = (p.n || '').slice(0, 4);
       t.style.pointerEvents = 'none';
-      uprightAt(t, p.x, p.y + tr * 0.34);
       g.appendChild(t);
       $('gTokens').appendChild(g);
     });
+
+    uprightTexts($('layers'));
   }
 
   /* ---------- hardpoints ---------- */
@@ -490,7 +511,6 @@
       });
       t.textContent = 'P' + (i + 1);
       t.style.pointerEvents = 'none';
-      uprightAt(t, p.x, p.y);
       box.appendChild(t);
       if (p.n) {
         var nm = svgEl('text', {
@@ -500,7 +520,6 @@
         });
         nm.textContent = p.n;
         nm.style.pointerEvents = 'none';
-        uprightAt(nm, p.x, p.y + r * 1.5);
         box.appendChild(nm);
       }
       g.appendChild(box);
@@ -555,10 +574,15 @@
     var ms = $('mapsel'), bs = $('boardsel');
     bs.style.display = '';
     ms.textContent = '';
-    if (!S.maps.length) {
+    var pickable = visibleMaps();
+    if (S.mapId && !pickable.some(function (m) { return m.id === S.mapId; })) {
+      var cur = curMap();
+      if (cur) pickable = pickable.concat([cur]);   // keep what is open selectable
+    }
+    if (!pickable.length) {
       ms.appendChild(new Option('No maps', ''));
     } else {
-      S.maps.forEach(function (m) {
+      pickable.forEach(function (m) {
         var o = new Option(m.name, m.id);
         if (m.id === S.mapId) o.selected = true;
         ms.appendChild(o);
@@ -597,7 +621,7 @@
 
   /* ---------- gestures ---------- */
   var ptrs = {};
-  var gest = null;   // {type:'pan'|'drag'|'draw'|'pinch', ...}
+  var gest = null;   // {type:'pan'|'drag'|'draw'|'draglabel'|'none', ...}
 
   function stageDown(e) {
     var m = curMap();
@@ -605,27 +629,25 @@
     /* The floating controls sit inside the board, so their taps bubble here.
        Without this, pressing Undo with the Mark tool active dropped a mark. */
     if (e.target.closest && e.target.closest('#float, #banner, #blank, #swatch')) return;
+
+    /* Locked rooms stay pannable and pingable — just not editable. */
+    if (!canEdit() && S.tool !== 'ping' && S.tool !== 'move') { denyEdit(); return; }
     ptrs[e.pointerId] = { x: e.clientX, y: e.clientY };
     var n = Object.keys(ptrs).length;
 
     if (n === 2) {
+      /* Two fingers no longer zoom — it fired by accident mid-drag. Abandon
+         whatever the first finger started instead. */
       if (gest && gest.type === 'draw' && gest.arrow) {
-        // two fingers mid-draw: abandon the stroke, treat as zoom
-        var b = curBoard();
-        var idx = b.arrows.indexOf(gest.arrow);
-        if (idx >= 0) b.arrows.splice(idx, 1);
+        var bb = curBoard();
+        var ai = bb.arrows.indexOf(gest.arrow);
+        if (ai >= 0) bb.arrows.splice(ai, 1);
         S.undo.pop();
         syncUndoButtons();
         render();
       }
-      var ids = Object.keys(ptrs);
-      var a = ptrs[ids[0]], c = ptrs[ids[1]];
-      gest = {
-        type: 'pinch',
-        d0: Math.hypot(a.x - c.x, a.y - c.y) || 1,
-        mid0: toSvg((a.x + c.x) / 2, (a.y + c.y) / 2),
-        view0: { x: S.view.x, y: S.view.y, w: S.view.w, h: S.view.h }
-      };
+      clearTimeout(S.holdTimer);
+      gest = { type: 'none' };
       return;
     }
     if (n !== 1) return;
@@ -634,6 +656,7 @@
     var hitEl = e.target.closest ? e.target.closest('[data-kind]') : null;
 
     if (S.hillEdit) {
+      if (!canEdit()) { denyEdit(); gest = { type: 'none' }; return; }
       var m2 = curMap();
       if (m2) {
         var hit = hitEl && hitEl.getAttribute('data-kind') === 'hill' ? hitEl : null;
@@ -661,6 +684,11 @@
     }
 
     if (S.tool === 'move') {
+      if (hitEl && !canEdit()) {
+        denyEdit();
+        gest = { type: 'none' };
+        return;
+      }
       if (hitEl && hitEl.getAttribute('data-kind') === 'token') {
         var id = hitEl.getAttribute('data-id');
         snapshot();
@@ -724,26 +752,6 @@
     ptrs[e.pointerId] = { x: e.clientX, y: e.clientY };
     if (!gest) return;
 
-    if (gest.type === 'pinch') {
-      var ids = Object.keys(ptrs);
-      if (ids.length < 2) return;
-      var a = ptrs[ids[0]], c = ptrs[ids[1]];
-      var d = Math.hypot(a.x - c.x, a.y - c.y) || 1;
-      var scale = gest.d0 / d;
-      var h = mapH();
-      var w = clamp(gest.view0.w * scale, 110, MAPW * 2.2);
-      var hh = w * (gest.view0.h / gest.view0.w);
-      var mid = { x: (a.x + c.x) / 2, y: (a.y + c.y) / 2 };
-      setView({ x: S.view.x, y: S.view.y, w: w, h: hh });
-      var after = toSvg(mid.x, mid.y);
-      setView({
-        x: S.view.x + (gest.mid0.x - after.x), y: S.view.y + (gest.mid0.y - after.y),
-        w: w, h: hh
-      });
-      render();
-      return;
-    }
-
     if (gest.type === 'pan') {
       if (!gest.moved && Math.abs(e.clientX - gest.c0.x) + Math.abs(e.clientY - gest.c0.y) > 8) {
         gest.moved = true;
@@ -796,11 +804,6 @@
     var remaining = Object.keys(ptrs).length;
     if (!gest) return;
 
-    if (gest.type === 'pinch') {
-      if (remaining === 0) gest = null;
-      else gest = { type: 'none' };
-      return;
-    }
     if (remaining > 0) return;
 
     if (gest.type === 'drag' && !gest.moved) {
@@ -1025,11 +1028,29 @@
       var mt = document.createElement('span');
       mt.className = 'mt';
       mt.textContent = boardsOf(m.id).length + ' setup' + (boardsOf(m.id).length === 1 ? '' : 's');
+      var vis = document.createElement('button');
+      vis.textContent = S.hidden[m.id] ? 'Hidden' : 'Shown';
+      vis.setAttribute('aria-pressed', S.hidden[m.id] ? 'false' : 'true');
+      vis.addEventListener('click', function () {
+        S.hidden[m.id] = !S.hidden[m.id];
+        if (S.hidden[m.id] && S.mapId === m.id) {
+          var next = visibleMaps().filter(function (x) { return x.id !== m.id; })[0];
+          if (next) {
+            S.mapId = next.id;
+            var nb = boardsOf(next.id);
+            S.boardId = (nb.length ? nb[0] : newBoard(next.id, 'Default')).id;
+            S.objUrl = null;
+            fitView();
+          }
+        }
+        saveMeta();
+        renderMapList();
+        refresh();
+        toast(S.hidden[m.id] ? m.name + ' hidden' : m.name + ' shown');
+      });
+
       if (m.bundled) {
-        var tag = document.createElement('span');
-        tag.className = 'pill';
-        tag.textContent = 'built in';
-        row.appendChild(nm); row.appendChild(mt); row.appendChild(tag);
+        row.appendChild(nm); row.appendChild(mt); row.appendChild(vis);
         box.appendChild(row);
         return;
       }
@@ -1068,7 +1089,8 @@
             toast('Map deleted');
           });
       });
-      row.appendChild(nm); row.appendChild(mt); row.appendChild(ren); row.appendChild(del);
+      row.appendChild(nm); row.appendChild(mt); row.appendChild(vis);
+      row.appendChild(ren); row.appendChild(del);
       box.appendChild(row);
     });
   }
@@ -1088,10 +1110,13 @@
   }
 
   function exportPack() {
-    var own = S.maps.filter(function (m) { return !m.bundled; });
-    if (!own.length && !S.boards.length) { toast('Nothing to share yet'); return; }
+    if (!S.boards.length && !Object.keys(S.hills).length) {
+      toast('Nothing to back up yet');
+      return;
+    }
     var pack = {
-      app: 'stratboard', v: 1, made: new Date().toISOString(),
+      app: 'stratboard', kind: 'backup', v: 2, made: new Date().toISOString(),
+      prefs: { nick: S.nick, hidden: S.hidden, flips: S.flips, showHills: S.showHills },
       /* Built-in maps ship with the app, so a pack only carries your own. */
       hills: S.maps.map(function (m) { return { map: m.name, pts: hillsFor(m.id) }; })
         .filter(function (h) { return h.pts.length; }),
@@ -1103,17 +1128,18 @@
         var mn = '';
         S.maps.forEach(function (m) { if (m.id === b.mapId) mn = m.name; });
         return {
-          map: mn, name: b.name, tokens: b.tokens, arrows: b.arrows,
-          marks: b.marks, labels: b.labels
+          map: mn, name: b.name, room: b.room || '', tokens: b.tokens,
+          arrows: b.arrows, marks: b.marks, labels: b.labels
         };
       })
     };
     var blob = new Blob([JSON.stringify(pack)], { type: 'application/json' });
-    var fname = 'stratboard-pack.json';
+    var stamp = new Date().toISOString().slice(0, 10);
+    var fname = 'stratboard-backup-' + stamp + '.json';
     var file = null;
     try { file = new File([blob], fname, { type: 'application/json' }); } catch (e) {}
     if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
-      navigator.share({ files: [file], title: 'Strat Board pack' }).catch(function () {});
+      navigator.share({ files: [file], title: 'Strat Board backup' }).catch(function () {});
       return;
     }
     var url = URL.createObjectURL(blob);
@@ -1121,15 +1147,23 @@
     a.href = url; a.download = fname;
     document.body.appendChild(a); a.click();
     setTimeout(function () { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1500);
-    toast('Pack saved to your files');
+    toast('Backup saved to your files');
   }
 
   function importPack(file) {
     var fr = new FileReader();
     fr.onload = function () {
       var pack;
-      try { pack = JSON.parse(fr.result); } catch (e) { toast('That is not a pack file'); return; }
-      if (!pack || pack.app !== 'stratboard' || !pack.maps) { toast('That is not a pack file'); return; }
+      try { pack = JSON.parse(fr.result); } catch (e) { toast('That is not a Strat Board backup'); return; }
+      if (!pack || pack.app !== 'stratboard') { toast('That is not a Strat Board backup'); return; }
+      pack.maps = pack.maps || [];
+      if (pack.prefs) {
+        if (pack.prefs.nick) { S.nick = pack.prefs.nick; $('nick').value = S.nick; }
+        if (pack.prefs.hidden) S.hidden = pack.prefs.hidden;
+        if (pack.prefs.flips) S.flips = pack.prefs.flips;
+        if (typeof pack.prefs.showHills === 'boolean') S.showHills = pack.prefs.showHills;
+        saveMeta();
+      }
       var byName = {};
       S.maps.forEach(function (m) { byName[m.name] = m; });
       var added = 0, first = null;
@@ -1161,7 +1195,7 @@
           var exists = boardsOf(m.id).some(function (b) { return b.name === pb.name; });
           if (exists) return;
           var b = {
-            id: uid(), mapId: m.id, name: pb.name || 'Imported',
+            id: uid(), mapId: m.id, room: pb.room || '', name: pb.name || 'Imported',
             tokens: pb.tokens || [], arrows: pb.arrows || [],
             marks: pb.marks || [], labels: pb.labels || [], updated: Date.now()
           };
@@ -1175,7 +1209,8 @@
           fitView();
         }
         renderMapList(); refresh();
-        toast('Imported ' + added + ' map' + (added === 1 ? '' : 's') + ', ' + bAdded + ' setups');
+        toast('Restored ' + bAdded + ' setup' + (bAdded === 1 ? '' : 's') +
+              (added ? ' and ' + added + ' map' + (added === 1 ? '' : 's') : ''));
       });
     };
     fr.onerror = function () { toast('Could not read that file'); };
@@ -1286,9 +1321,7 @@
     var r0 = clamp(S.view.w / 26, 10, 46);
     /* Everything sits in a translated group so the ring can scale about its
        own centre, and each ping animates from the moment it is added. */
-    var g = svgEl('g', {
-      transform: 'translate(' + x + ',' + y + ')' + (isFlipped() ? ' rotate(180)' : '')
-    });
+    var g = svgEl('g', { transform: 'translate(' + x + ',' + y + ')' });
     var ring = svgEl('circle', {
       cx: 0, cy: 0, r: r0, fill: 'none', stroke: colour, 'stroke-width': r0 / 5
     });
@@ -1308,6 +1341,7 @@
     g.appendChild(ring);
     g.appendChild(body);
     $('gPings').appendChild(g);
+    uprightTexts(g);
     setTimeout(function () { if (g.parentNode) g.parentNode.removeChild(g); }, 5000);
   }
 
@@ -1435,6 +1469,25 @@
     dbPut('maps', rec).catch(function () { toast('Map received but could not be saved'); });
   }
 
+  function isHost() { return !S.room || S.host === S.clientId; }
+
+  /* The host can lock the room so only they make changes. Everyone shares the
+     room key, so this is a courtesy between teammates, not security — and if
+     the host drops off we release it rather than leave the room stuck. */
+  function hostAway() {
+    if (!S.host || S.host === S.clientId) return false;
+    var seen = S.members[S.host];
+    return !seen || (Date.now() - seen.t) > 90000;
+  }
+  function canEdit() {
+    if (!S.room || !S.locked) return true;
+    return isHost() || hostAway();
+  }
+  function denyEdit() {
+    var who = S.members[S.host] ? S.members[S.host].n : 'the host';
+    banner('View only — ' + who + ' has locked changes.', 2500);
+  }
+
   function boardTag(id) { return roomTag() + ':b:' + id; }
 
   /* The room's shape: which map, which setup is open, and the setup list.
@@ -1444,6 +1497,7 @@
     var m = curMap();
     return JSON.stringify({
       v: 2, by: S.clientId, n: S.nick || 'Player', map: m ? m.name : '',
+      host: S.host || S.clientId, locked: !!S.locked, flip: isFlipped(),
       active: S.boardId,
       setups: m ? boardsOf(m.id).map(function (b) { return { id: b.id, name: b.name }; }) : []
     });
@@ -1664,6 +1718,7 @@
         var bd;
         try { bd = JSON.parse(ev.content); } catch (e) { return; }
         if (!bd || bd.by === S.clientId) return;
+        if (S.locked && isHost() && bd.by !== S.host) return;
         if (gest && bd.id === S.boardId &&
             (gest.type === 'drag' || gest.type === 'draw' || gest.type === 'draglabel')) {
           S.pendingRemote = bd;      // never yank the board out from under a finger
@@ -1742,6 +1797,23 @@
     }
     if (!curMap()) { S.pendingState = data; return; }
 
+    var fm = curMap();
+    if (fm && typeof data.flip === 'boolean' && !!S.flips[fm.id] !== data.flip) {
+      S.flips[fm.id] = data.flip;
+      saveMeta();
+      render();
+      banner(data.flip ? 'Map flipped by the room' : 'Map turned back', 2500);
+    }
+    if (data.host) S.host = data.host;
+    if (typeof data.locked === 'boolean' && data.locked !== S.locked) {
+      S.locked = data.locked;
+      if (!isHost()) {
+        banner(S.locked ? 'The host has locked changes — view only.'
+                        : 'Changes unlocked — you can edit again.', 4000);
+      }
+    }
+    renderLock();
+
     reconcileSetups(data);
     renderMembers();
   }
@@ -1763,6 +1835,26 @@
     if (changed) renderMembers();
   }
 
+  function renderLock() {
+    var row = $('lockrow'), btn = $('locktoggle'), note = $('locknote');
+    if (!row) return;
+    if (!S.room) { row.style.display = 'none'; note.style.display = 'none'; return; }
+    if (isHost()) {
+      row.style.display = '';
+      btn.textContent = S.locked ? 'Others can edit: off' : 'Others can edit: on';
+      btn.setAttribute('aria-pressed', S.locked ? 'true' : 'false');
+      note.style.display = '';
+      note.textContent = S.locked
+        ? 'Only you can make changes. Everyone can still ping and look around.'
+        : 'Everyone in the room can make changes.';
+    } else {
+      row.style.display = 'none';
+      note.style.display = S.locked ? '' : 'none';
+      note.textContent = 'The host has locked changes — you can ping and look around.';
+    }
+    $('viewonly').classList.toggle('show', !!(S.room && S.locked && !canEdit()));
+  }
+
   function renderRoomState() {
     var el = $('roomstate');
     if (!el) return;
@@ -1780,6 +1872,7 @@
 
   function renderMembers() {
     renderRoomState();
+    renderLock();
     var n = Object.keys(S.members).length;
     var btn = $('livebtn');
     /* Just a dot and a headcount — the word "Live" was eating a third of the
@@ -1862,6 +1955,8 @@
     S.pendingState = null;
     S.roomMapName = '';
     S.metaWaiting = null;
+    S.host = S.clientId;      // replaced by the room's own host if one exists
+    S.locked = false;
     $('roomcode').value = code;
 
     if (S.mapId) {
@@ -1971,10 +2066,15 @@
       fillSelects(); render(); syncUndoButtons();
     }
     S.mapSent = false; S.mapRx = { meta: null, chunks: {} }; S.pendingState = null;
-    S.roomMapName = ''; S.metaWaiting = null;
+    S.roomMapName = ''; S.metaWaiting = null; S.host = ''; S.locked = false;
     renderMembers();
     saveMeta();
-    if (!quiet) { toast('Left the room'); banner(''); }
+    if (!quiet) {
+      toast('Left the room');
+      banner('');
+      closeSheet('menu');
+      showStart();          // back to the choice, rather than a dead board
+    }
   }
 
   /* ---------- wiring ---------- */
@@ -2056,6 +2156,7 @@
     });
 
     $('edithills').addEventListener('click', function () {
+      if (!canEdit()) { denyEdit(); toast('Only the host can change things'); return; }
       if (!curMap()) { toast('Pick a map first'); return; }
       closeSheet('menu');
       setHillEdit(true);
@@ -2064,13 +2165,16 @@
     $('flipbtn').addEventListener('click', function () {
       var m = curMap();
       if (!m) { toast('Pick a map first'); return; }
+      if (!canEdit()) { denyEdit(); return; }
       S.flips[m.id] = !S.flips[m.id];
       render();
       saveMeta();
+      if (S.room) publishRoomState();     // everyone turns the board together
       toast(S.flips[m.id] ? 'Map flipped' : 'Map back to normal');
     });
 
     $('wipe').addEventListener('click', function () {
+      if (!canEdit()) { denyEdit(); return; }
       var b = curBoard();
       if (!b) return;
       if (!b.arrows.length && !b.marks.length && !b.labels.length) {
@@ -2085,6 +2189,7 @@
 
     $('mapsel').addEventListener('change', function () {
       if (!this.value) return;
+      if (!canEdit()) { denyEdit(); fillSelects(); return; }
       var m = null;
       S.maps.forEach(function (x) { if (x.id === this.value) m = x; }, this);
       S.undo.length = 0; S.redo.length = 0; S.objUrl = null;
@@ -2109,6 +2214,7 @@
     });
     $('boardsel').addEventListener('change', function () {
       if (!this.value) return;
+      if (!canEdit()) { denyEdit(); fillSelects(); return; }
       S.boardId = this.value;
       S.undo.length = 0; S.redo.length = 0;
       refresh(); syncUndoButtons();
@@ -2117,6 +2223,7 @@
 
     $('setupsel').addEventListener('change', function () {
       if (!this.value) return;
+      if (!canEdit()) { denyEdit(); fillSelects(); return; }
       S.boardId = this.value;
       S.undo.length = 0; S.redo.length = 0;
       refresh(); syncUndoButtons();
@@ -2152,23 +2259,26 @@
     $('mcancel').addEventListener('click', function () { done('cancel'); });
     $('minput').addEventListener('keydown', function (e) { if (e.key === 'Enter') done('ok'); });
 
-    $('addmap').addEventListener('change', function () { handleMapFiles(this.files); this.value = ''; });
     $('blankadd').addEventListener('change', function () { handleMapFiles(this.files); this.value = ''; });
-    $('importpack').addEventListener('change', function () {
+    $('restore').addEventListener('change', function () {
       if (this.files[0]) importPack(this.files[0]);
       this.value = '';
     });
-    $('exportpack').addEventListener('click', exportPack);
+    $('backup').addEventListener('click', exportPack);
 
-    $('addblue').addEventListener('click', function () { addToken('b'); });
-    $('addred').addEventListener('click', function () { addToken('r'); });
+    $('addblue').addEventListener('click', function () {
+      if (!canEdit()) { denyEdit(); toast('Only the host can change things'); return; } addToken('b'); });
+    $('addred').addEventListener('click', function () {
+      if (!canEdit()) { denyEdit(); toast('Only the host can change things'); return; } addToken('r'); });
     $('clearmarks').addEventListener('click', function () {
+      if (!canEdit()) { denyEdit(); toast('Only the host can change things'); return; }
       var b = curBoard(); if (!b) return;
       snapshot();
       b.arrows = []; b.marks = []; b.labels = [];
       render(); saveBoard(); toast('Drawing cleared');
     });
     $('resetpos').addEventListener('click', function () {
+      if (!canEdit()) { denyEdit(); toast('Only the host can change things'); return; }
       var b = curBoard(); if (!b) return;
       snapshot();
       var h = mapH();
@@ -2180,6 +2290,7 @@
     });
 
     $('newboard').addEventListener('click', function () {
+      if (!canEdit()) { denyEdit(); toast('Only the host can change things'); return; }
       if (!S.mapId) { toast('Add a map first'); return; }
       ask({ title: 'New setup', field: true, placeholder: 'A site default', maxLength: 28, okText: 'Create' })
         .then(function (r) {
@@ -2192,6 +2303,7 @@
         });
     });
     $('dupboard').addEventListener('click', function () {
+      if (!canEdit()) { denyEdit(); toast('Only the host can change things'); return; }
       var b = curBoard(); if (!b) return;
       var copy = JSON.parse(JSON.stringify({
         tokens: b.tokens, arrows: b.arrows, marks: b.marks, labels: b.labels
@@ -2208,6 +2320,7 @@
       if (S.room) { publishRoomState(); publishBoard(nb); subBoards(); }
     });
     $('renboard').addEventListener('click', function () {
+      if (!canEdit()) { denyEdit(); toast('Only the host can change things'); return; }
       var b = curBoard(); if (!b) return;
       ask({ title: 'Setup name', field: true, value: b.name, maxLength: 28, okText: 'Save' })
         .then(function (r) {
@@ -2217,6 +2330,7 @@
         });
     });
     $('delboard').addEventListener('click', function () {
+      if (!canEdit()) { denyEdit(); toast('Only the host can change things'); return; }
       var b = curBoard(); if (!b) return;
       confirmBox('Delete ' + b.name + '?', 'This cannot be undone.').then(function (ok) {
         if (!ok) return;
@@ -2259,6 +2373,14 @@
         ask({ title: 'Invite link', field: true, value: url, okText: 'Done' });
       }
     });
+    $('locktoggle').addEventListener('click', function () {
+      if (!isHost()) return;
+      S.locked = !S.locked;
+      renderLock();
+      publishRoomState();
+      toast(S.locked ? 'Only you can make changes now' : 'Everyone can make changes');
+    });
+
     $('leaveroom').addEventListener('click', function () { leaveRoom(); });
     $('sendmap').addEventListener('click', function () {
       if (!curMap()) { toast('No map to send'); return; }
@@ -2511,6 +2633,7 @@
         S.colour = st.colour || S.colour;
         if (st.showHills === false) S.showHills = false;
         if (st.flips) S.flips = st.flips;
+        if (st.hidden) S.hidden = st.hidden;
         S.clientId = st.clientId || S.clientId;
         if (st.mapId && S.maps.some(function (m) { return m.id === st.mapId; })) S.mapId = st.mapId;
         if (st.boardId && S.boards.some(function (b) { return b.id === st.boardId; })) S.boardId = st.boardId;

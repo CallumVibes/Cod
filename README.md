@@ -19,7 +19,7 @@ The six tools along the bottom:
 
 | Tool | What it does |
 | --- | --- |
-| **Move** | Drag players around. Tap one to rename it, drag the map to pan, pinch to zoom. Hold the map to ping. |
+| **Move** | Drag players around. Tap one to rename it, drag the map to pan. Hold the map to ping. |
 | **Ping** | Tap anywhere to flash a marker with your name on everyone's screen for five seconds. Nothing is saved — it is just for pointing. |
 | **Arrow** | Draw a rotation with your finger. |
 | **Mark** | Drop an X. |
@@ -31,6 +31,14 @@ hardpoints, and the arrows to flip the map round when you spawn the other side.
 The map turns; the writing on it stays the right way up. Each map remembers
 whether you had it flipped.
 
+## Who can change things
+
+Whoever creates the room is the host, and can turn **Others can edit** off in
+the menu. Everyone else can still look around and ping, but cannot move
+players or draw. It is a courtesy between teammates rather than real security:
+anyone with the code shares the same key, so a determined person could ignore
+it. If the host drops off, the lock releases so the room is not stuck.
+
 ## Playing together
 
 First time you open it you get **Create a room** or **Join a room**.
@@ -38,6 +46,8 @@ First time you open it you get **Create a room** or **Join a room**.
 1. One person taps **Create a room** and gets a code.
 2. They share it — the invite link, or just read it out.
 3. Everyone else taps **Join a room** and types the code.
+
+Leaving a room takes you back to that same screen.
 
 From then on you all see the same board. Drag a player and it moves on
 everyone's screen. Change the map and the whole team follows.
@@ -65,12 +75,14 @@ room, and shown on every setup on that map. The **P** button toggles them.
 
 ## Maps
 
-Six maps are built in. To add your own, menu → **Add map** and pick a
-screenshot of the in-game tac map. Your own maps are sent to your room
-automatically when you switch to them.
+The maps are built in. Each one has a **Shown / Hidden** toggle in the menu —
+hide the ones that are out of the rotation and they drop out of the picker
+without being lost.
 
-**Map packs** are for sending maps to someone outside a room: *Share map pack*
-makes one file, they use *Import pack*.
+## Backups
+
+**Back up** writes your setups, hardpoints and preferences to one file. Keep it
+somewhere safe, or use **Restore** on a new phone to pick up where you left off.
 
 ## If something is wrong
 

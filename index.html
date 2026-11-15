@@ -74,6 +74,11 @@ background:rgba(22,26,33,.9);border-color:#333b48;font-size:17px}
 border:1px solid var(--line);border-radius:var(--r);padding:8px 11px;font-size:13px;
 color:var(--dim);display:none}
 #banner.show{display:block}
+#viewonly{position:absolute;left:50%;transform:translateX(-50%);bottom:9px;z-index:6;
+display:none;font-size:12px;letter-spacing:.04em;text-transform:uppercase;
+background:rgba(22,26,33,.94);border:1px solid #4a3a1f;color:#f5b708;
+border-radius:999px;padding:5px 13px;pointer-events:none}
+#viewonly.show{display:block}
 
 /* swatches */
 #swatch{display:none;gap:8px;padding:8px 10px;align-items:center;
@@ -119,6 +124,7 @@ border-radius:var(--r);overflow:hidden}
 .item .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14.5px}
 .item .mt{font-size:12px;color:var(--faint)}
 .item button{min-height:34px;height:34px;padding:0 10px;font-size:13px}
+.item button[aria-pressed="false"]{color:var(--faint);border-color:#2a313d}
 .empty{padding:14px 12px;color:var(--faint);font-size:13px;background:var(--surface2);text-align:center}
 .pill{display:inline-block;font-size:11.5px;padding:3px 9px;border-radius:999px;
 background:var(--surface2);border:1px solid var(--line);color:var(--dim)}
@@ -180,6 +186,7 @@ padding:10px 14px;font-size:13.5px;box-shadow:0 6px 20px rgba(0,0,0,.45);text-al
       </g>
     </svg>
     <div id="banner"></div>
+    <div id="viewonly">View only</div>
     <div id="float">
       <button id="undo" aria-label="Undo">&#8630;</button>
       <button id="redo" aria-label="Redo">&#8631;</button>
@@ -241,13 +248,11 @@ padding:10px 14px;font-size:13.5px;box-shadow:0 6px 20px rgba(0,0,0,.45);text-al
       <h3>Maps</h3>
       <div class="list" id="maplist"></div>
       <div class="row">
-        <label class="file">Add map<input type="file" id="addmap" accept="image/*" multiple></label>
-        <button id="exportpack">Share map pack</button>
+        <button id="backup">Back up</button>
+        <label class="file">Restore<input type="file" id="restore" accept=".json,application/json"></label>
       </div>
-      <div class="row">
-        <label class="file">Import pack<input type="file" id="importpack" accept=".json,application/json"></label>
-      </div>
-      <p class="hint">A pack is one file holding your own maps and setups, for sending to a mate.</p>
+      <p class="hint">A backup is one file holding your setups, hardpoints and preferences —
+      keep it somewhere safe, or use it to move to a new phone.</p>
     </div>
 
     <div class="sect">
@@ -268,6 +273,10 @@ padding:10px 14px;font-size:13.5px;box-shadow:0 6px 20px rgba(0,0,0,.45);text-al
       <div class="row">
         <button id="sendmap">Send map to room</button>
       </div>
+      <div class="row" id="lockrow" style="display:none">
+        <button id="locktoggle" aria-pressed="false">Others can edit: on</button>
+      </div>
+      <p class="hint" id="locknote" style="display:none"></p>
       <div id="members"></div>
       <p class="hint">The code is the only password — pick one your mates would not guess.</p>
     </div>
