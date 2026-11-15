@@ -194,6 +194,7 @@
     hillNames: {},
     flips: {},
     hidden: {},
+    lastSetup: {},
     showHills: true,
     hillEdit: false,
     busy: false
@@ -251,7 +252,8 @@
     if (b.labels.length !== base.labels.length) return false;
     if (b.tokens.length !== base.tokens.length) return false;
     return b.tokens.every(function (t, k) {
-      var o = base.tokens[k];
+      var o = b.base ? base.tokens.filter(function (x) { return x.id === t.id; })[0]
+                     : base.tokens[k];
       return o && Math.abs(t.x - o.x) <= 1 && Math.abs(t.y - o.y) <= 1 && t.n === o.n;
     }) && JSON.stringify(b.arrows) === JSON.stringify(base.arrows) &&
        JSON.stringify(b.marks) === JSON.stringify(base.marks) &&
@@ -263,12 +265,13 @@
     for (i = 0; i < S.maps.length; i++) if (S.maps[i].id === mapId) m = S.maps[i];
     if (m) h = m.h;
     var names = ['AR', 'Sub', 'Flex', 'Anch'];
+    var id = uid();
     var b = {
-      id: uid(), mapId: mapId, room: S.room || '',
+      id: id, mapId: mapId, room: S.room || '',
       name: name || ('Setup ' + (boardsOf(mapId).length + 1)),
       tokens: names.map(function (n, k) {
         var sp = homeSpot(k, h);
-        return { id: uid(), n: n, x: sp.x, y: sp.y, team: 'b' };
+        return { id: id + ':t' + k, n: n, x: sp.x, y: sp.y, team: 'b' };
       }),
       arrows: [], marks: [], labels: [], updated: Date.now()
     };
@@ -283,15 +286,15 @@
     /* We have just changed this board ourselves, so an incoming copy that
        matches an earlier one is news again, not a repeat. */
     delete S.seenBoard[b.id];
-    b.v = (b.v || 0) + 1;
     b.updated = Date.now();
     dbPut('boards', b);
     if (broadcast !== false) queueSend();
   }
   function saveMeta() {
+    if (S.mapId && S.boardId) S.lastSetup[S.mapId] = S.boardId;   // where this map was left
     dbPut('meta', {
       k: 'settings', mapId: S.mapId, boardId: S.boardId, nick: S.nick, showHills: S.showHills,
-      flips: S.flips, hidden: S.hidden,
+      flips: S.flips, hidden: S.hidden, lastSetup: S.lastSetup,
       room: S.room, relays: S.relays, colour: S.colour, clientId: S.clientId
     });
   }
@@ -299,23 +302,57 @@
   /* ---------- undo ---------- */
   function clone(x) { return JSON.parse(JSON.stringify(x || [])); }
 
+  function rnd(n) { return Math.round(n * 10) / 10; }
+
+  /* Putting players back deliberately — restoring a saved setup, or undoing —
+     has to beat whatever a teammate moved a moment ago, so it is stamped
+     above everything either side has seen for that board. */
+  function topTv(list) {
+    var top = 0;
+    (list || []).forEach(function (t) { if ((t.tv || 0) > top) top = t.tv || 0; });
+    return top;
+  }
+
+  function claimTokens(tokens, above) {
+    var top = Math.max(above || 0, topTv(tokens));
+    (tokens || []).forEach(function (t) { t.tv = top + 1; t.tb = S.clientId; });
+  }
+
   function snapshot() {
     var b = curBoard();
     if (!b) return;
-    S.undo.push(JSON.stringify({ tokens: b.tokens, arrows: b.arrows, marks: b.marks, labels: b.labels }));
+    S.undo.push(JSON.stringify({ tokens: b.tokens, arrows: b.arrows, marks: b.marks,
+                                 labels: b.labels }));
     if (S.undo.length > 40) S.undo.shift();
     S.redo.length = 0;
     syncUndoButtons();
   }
   function applySnap(json) {
     var b = curBoard(), s = JSON.parse(json);
+    var hadTv = topTv(b.tokens);
     b.tokens = s.tokens; b.arrows = s.arrows; b.marks = s.marks; b.labels = s.labels;
+    claimTokens(b.tokens, hadTv);
+    revive(b);
+  }
+
+  /* Anything restored that the room has been told was deleted comes back
+     under a new name, so teammates take it as something new rather than
+     quietly removing it again. */
+  function revive(b) {
+    var gone = {};
+    (b.gone || []).forEach(function (id) { gone[id] = 1; });
+    ['arrows', 'marks', 'labels', 'tokens'].forEach(function (k) {
+      (b[k] || []).forEach(function (o) {
+        if (o && gone[o.id]) o.id = uid();
+      });
+    });
   }
   function doUndo() {
     if (!canEdit()) { denyEdit(); return; }
     var b = curBoard();
     if (!b || !S.undo.length) return;
-    S.redo.push(JSON.stringify({ tokens: b.tokens, arrows: b.arrows, marks: b.marks, labels: b.labels }));
+    S.redo.push(JSON.stringify({ tokens: b.tokens, arrows: b.arrows, marks: b.marks,
+                                 labels: b.labels }));
     applySnap(S.undo.pop());
     render(); saveBoard(); syncUndoButtons();
   }
@@ -323,7 +360,8 @@
     if (!canEdit()) { denyEdit(); return; }
     var b = curBoard();
     if (!b || !S.redo.length) return;
-    S.undo.push(JSON.stringify({ tokens: b.tokens, arrows: b.arrows, marks: b.marks, labels: b.labels }));
+    S.undo.push(JSON.stringify({ tokens: b.tokens, arrows: b.arrows, marks: b.marks,
+                                 labels: b.labels }));
     applySnap(S.redo.pop());
     render(); saveBoard(); syncUndoButtons();
   }
@@ -683,7 +721,17 @@
 
     /* Locked rooms stay pannable and pingable — just not editable. */
     if (!canEdit() && S.tool !== 'ping' && S.tool !== 'move') { denyEdit(); return; }
-    ptrs[e.pointerId] = { x: e.clientX, y: e.clientY };
+    /* Phones sometimes never report a finger lifting — off the edge of the
+       screen, a call coming in. A forgotten finger used to make every later
+       tap look like a second one, so the board stopped responding until the
+       app was restarted. Anything this old is gone. */
+    var now = Date.now();
+    Object.keys(ptrs).forEach(function (k) {
+      if (now - (ptrs[k].t || 0) > 4000) delete ptrs[k];
+    });
+    if (!Object.keys(ptrs).length) gest = null;
+
+    ptrs[e.pointerId] = { x: e.clientX, y: e.clientY, t: now };
     var n = Object.keys(ptrs).length;
 
     if (n === 2) {
@@ -780,7 +828,7 @@
 
     if (S.tool === 'mark') {
       snapshot();
-      curBoard().marks.push({ id: uid(), x: p.x, y: p.y, c: S.colour });
+      curBoard().marks.push({ id: uid(), x: rnd(p.x), y: rnd(p.y), c: S.colour });
       render(); saveBoard();
       gest = { type: 'none' };
       return;
@@ -793,7 +841,7 @@
 
   function stageMove(e) {
     if (!ptrs[e.pointerId]) return;
-    ptrs[e.pointerId] = { x: e.clientX, y: e.clientY };
+    ptrs[e.pointerId] = { x: e.clientX, y: e.clientY, t: Date.now() };
     if (!gest) return;
 
     if (gest.type === 'text') {
@@ -815,7 +863,9 @@
       var b = curBoard(), t = null;
       b.tokens.forEach(function (x) { if (x.id === gest.id) t = x; });
       if (!t) return;
-      t.x = p.x; t.y = p.y;
+      t.x = rnd(p.x); t.y = rnd(p.y);
+      t.tv = (t.tv || 0) + 1;
+      t.tb = S.clientId;
       gest.moved = true;
       render();
       liveSend();
@@ -825,7 +875,7 @@
       var bb = curBoard(), l = null;
       bb.labels.forEach(function (x) { if (x.id === gest.id) l = x; });
       if (!l) return;
-      l.x = p.x; l.y = p.y;
+      l.x = rnd(p.x); l.y = rnd(p.y);
       gest.moved = true;
       render();
       liveSend();
@@ -835,8 +885,8 @@
       var pts = gest.arrow.pts, last = pts[pts.length - 1];
       var minStep = S.view.w / 70;
       if (Math.abs(last[0] - p.x) + Math.abs(last[1] - p.y) > minStep) {
-        pts.push([p.x, p.y]);
-        if (pts.length > 400) pts.shift();
+        pts.push([rnd(p.x), rnd(p.y)]);
+        if (pts.length > 220) pts.shift();
         render();
       }
     }
@@ -861,7 +911,7 @@
         .then(function (r) {
           if (r.action !== 'ok' || !r.value) return;
           snapshot();
-          curBoard().labels.push({ id: uid(), x: at.x, y: at.y, t: r.value, c: S.colour });
+          curBoard().labels.push({ id: uid(), x: rnd(at.x), y: rnd(at.y), t: r.value, c: S.colour });
           render(); saveBoard();
         });
       return;
@@ -889,11 +939,20 @@
     gest = null;
   }
 
+  function forget(b, ids) {
+    if (!b) return;
+    var gone = b.gone || [];
+    ids.forEach(function (id) { if (id && gone.indexOf(id) < 0) gone.push(id); });
+    if (gone.length > 300) gone = gone.slice(gone.length - 300);
+    b.gone = gone;
+  }
+
   function removeById(kind, id) {
     var b = curBoard();
     var key = kind === 'arrow' ? 'arrows' : kind === 'mark' ? 'marks'
       : kind === 'label' ? 'labels' : 'tokens';
     b[key] = b[key].filter(function (o) { return o.id !== id; });
+    forget(b, [id]);
   }
 
   function editToken(id) {
@@ -1432,11 +1491,19 @@
     return null;
   }
 
+  function pickBoardFor(mapId) {
+    var list = boardsOf(mapId);
+    var want = S.lastSetup[mapId];
+    if (want) {
+      for (var i = 0; i < list.length; i++) if (list[i].id === want) return list[i];
+    }
+    return list.length ? list[0] : newBoard(mapId, 'Default');
+  }
+
   function useMapForRoom(m) {
     S.mapId = m.id;
     S.objUrl = null;
-    var list = boardsOf(m.id);
-    S.boardId = (list.length ? list[0] : newBoard(m.id, 'Default')).id;
+    S.boardId = pickBoardFor(m.id).id;
     fitView();
     fillSelects();
     render();
@@ -1586,14 +1653,27 @@
   function publishBoard(b) {
     if (!S.pool || !S.roomSk || !S.room || !b) return;
     if ((b.room || '') !== S.room) return;
+    b.v = (b.v || 0) + 1;
     NostrLite.finalize({
       kind: 30078, created_at: stampFor('b:' + b.id), tags: [['d', boardTag(b.id)]],
       content: JSON.stringify({
         by: S.clientId, id: b.id, name: b.name, tokens: b.tokens,
         arrows: b.arrows, marks: b.marks, labels: b.labels, base: b.base || null,
-        v: b.v || 0
+        gone: b.gone || [], v: b.v || 0
       })
     }, S.roomSk).then(function (ev) { if (S.pool) S.pool.publish(ev); }).catch(function () {});
+  }
+
+  /* We hold the newer copy, so send it again rather than leave the other
+     phone showing something nobody else can see. Rate-limited: a room full
+     of phones must not answer each other in circles. */
+  function nudge(b) {
+    if (!b || !S.room || !S.pool) return;
+    var now = Date.now();
+    if (now - (S.lastNudge || 0) < 900) return;
+    S.lastNudge = now;
+    clearTimeout(S.nudgeTimer);
+    S.nudgeTimer = setTimeout(function () { publishBoard(b); dbPut('boards', b); }, 250);
   }
 
   function inRoomBoard() {
@@ -1639,6 +1719,18 @@
     subHills();
   }
 
+  /* Rebuild the connection and nothing else: same room, same setup, same
+     undo history. */
+  function reopen() {
+    if (!S.pool || !S.room) return;
+    var now = Date.now();
+    if (now - (S.lastReopen || 0) < 20000) return;
+    S.lastReopen = now;
+    S.lastRx = now;
+    try { S.pool.reconnect(); } catch (e) {}
+    resync();
+  }
+
   function sendBeat() {
     if (!S.pool || !S.roomSk) return;
     var ev = {
@@ -1663,7 +1755,11 @@
       if (!local) {
         local = {
           id: e.id, mapId: m.id, room: S.room, name: e.name,
-          tokens: [], arrows: [], marks: [], labels: [], updated: Date.now()
+          tokens: ['AR', 'Sub', 'Flex', 'Anch'].map(function (n, k) {
+            var sp = homeSpot(k, m.h);
+            return { id: e.id + ':t' + k, n: n, x: sp.x, y: sp.y, team: 'b' };
+          }),
+          arrows: [], marks: [], labels: [], v: 0, updated: Date.now()
         };
         S.boards.push(local);
         dbPut('boards', local);
@@ -1700,6 +1796,42 @@
     if (changed) { fillSelects(); render(); saveMeta(); }
   }
 
+  /* Two phones changing the same setup at the same moment used to mean one
+     of them simply lost — everyone drops a player at once during setup, and
+     only the last one to land survived. Both sides are now folded together:
+     a player carries its own little count so whoever moved it last wins that
+     player alone, drawings are pooled by id, and anything deliberately
+     removed stays removed. */
+  function mergeLists(winner, loser, gone) {
+    var out = [], seen = {};
+    (winner || []).forEach(function (o) {
+      if (!o || !o.id || seen[o.id] || gone[o.id]) return;
+      seen[o.id] = 1; out.push(o);
+    });
+    (loser || []).forEach(function (o) {
+      if (!o || !o.id || seen[o.id] || gone[o.id]) return;
+      seen[o.id] = 1; out.push(o);
+    });
+    return out;
+  }
+
+  function mergeTokens(winner, loser, gone) {
+    var byId = {}, order = [];
+    function take(list) {
+      (list || []).forEach(function (t) {
+        if (!t || !t.id || gone[t.id]) return;
+        var had = byId[t.id];
+        if (!had) { byId[t.id] = t; order.push(t.id); return; }
+        /* Whoever moved this player most recently keeps it, whatever else
+           changed on the board. */
+        if ((t.tv || 0) > (had.tv || 0)) byId[t.id] = t;   // ties keep the winner's
+      });
+    }
+    take(winner);
+    take(loser);
+    return order.map(function (id) { return byId[id]; });
+  }
+
   function applyBoard(data) {
     var target = null;
     S.boards.forEach(function (b) { if (b.id === data.id) target = b; });
@@ -1710,14 +1842,34 @@
     /* Strictly older only. Two people editing at the same moment can land on
        the same count, and there the newest arrival should win as it always
        did — rejecting those left a joiner staring at an empty board. */
-    if (data.v !== undefined) {
-      if ((data.v || 0) < (target.v || 0)) return;
-      target.v = data.v || 0;
+    /* Nothing is ever thrown away for being old: the two boards are folded
+       together instead. An older copy coming round again can only repeat
+       what we already have, and a removal is remembered, so a replay cannot
+       undo anything. The count only decides who wins when both sides changed
+       the very same thing. */
+    var mine = target.v || 0, theirs = data.v || 0;
+    var theirsWins = theirs > mine ||
+      (theirs === mine && String(data.by || '') > String(S.clientId));
+    target.v = theirs > mine ? theirs : mine;
+    /* Everything either side has thrown away stays thrown away. */
+    var goneList = (target.gone || []).concat(data.gone || []);
+    if (goneList.length > 300) goneList = goneList.slice(goneList.length - 300);
+    target.gone = goneList;
+    var gone = {};
+    goneList.forEach(function (id) { gone[id] = 1; });
+
+    var win = theirsWins ? data : target, lose = theirsWins ? target : data;
+    var before = (data.arrows || []).length + (data.marks || []).length +
+                 (data.labels || []).length;
+    target.tokens = mergeTokens(win.tokens || [], lose.tokens || [], gone);
+    target.arrows = mergeLists(win.arrows || [], lose.arrows || [], gone);
+    target.marks = mergeLists(win.marks || [], lose.marks || [], gone);
+    target.labels = mergeLists(win.labels || [], lose.labels || [], gone);
+    /* We are holding something they have not got — hand it back, or their
+       screen quietly stays short of an idea somebody drew. */
+    if (target.arrows.length + target.marks.length + target.labels.length !== before) {
+      nudge(target);
     }
-    target.tokens = data.tokens || [];
-    target.arrows = data.arrows || [];
-    target.marks = data.marks || [];
-    target.labels = data.labels || [];
     if (data.name && data.name !== target.name) target.name = data.name;
     if (data.base) target.base = data.base;
     target.updated = Date.now();
@@ -2058,8 +2210,7 @@
     $('roomcode').value = code;
 
     if (S.mapId) {
-      var mine = boardsOf(S.mapId);     // already scoped to the new room
-      S.boardId = (mine.length ? mine[0] : newBoard(S.mapId, 'Default')).id;
+      S.boardId = pickBoardFor(S.mapId).id;   // already scoped to the new room
     }
     S.undo.length = 0; S.redo.length = 0;
 
@@ -2130,7 +2281,7 @@
            for this long means the connection is dead, so rebuild it. */
         if (S.room && Object.keys(S.members).length &&
             Date.now() - S.lastRx > 45000) {
-          joinRoom(S.room, true);
+          reopen();
         }
       }, BEAT_MS);
       setTimeout(sendBeat, 900);
@@ -2276,14 +2427,31 @@
       if (!b) return;
       if (sameAsBase(b)) { toast('Already on the saved setup'); return; }
       var base = baseOf(b);
+      var hadTv = topTv(b.tokens);        // beat whatever is on the board now
       snapshot();
+      var dropped = [];
+      ['arrows', 'marks', 'labels'].forEach(function (k) {
+        b[k].forEach(function (o) { dropped.push(o.id); });
+      });
+      if (b.base) {
+        var keep = {};
+        base.tokens.forEach(function (t) { keep[t.id] = 1; });
+        b.tokens.forEach(function (t) { if (!keep[t.id]) dropped.push(t.id); });
+      }
       b.arrows = clone(base.arrows);
       b.marks = clone(base.marks);
       b.labels = clone(base.labels);
-      b.tokens.forEach(function (t, k) {        // players back where they were saved
-        var o = base.tokens[k];
-        if (o) { t.x = o.x; t.y = o.y; }
-      });
+      if (b.base) {
+        b.tokens = clone(base.tokens);          // exactly the setup you saved
+      } else {
+        b.tokens.forEach(function (t, k) {      // never saved: starting line
+          var o = base.tokens[k];
+          if (o) { t.x = o.x; t.y = o.y; }
+        });
+      }
+      forget(b, dropped);
+      claimTokens(b.tokens, hadTv);
+      revive(b);
       render(); saveBoard();
       toast((b.base ? 'Back to the saved setup' : 'Board reset') + ' — undo is top right');
     });
@@ -2322,9 +2490,9 @@
         return;
       }
 
+      saveMeta();                      // remember where we are leaving
       S.mapId = this.value;
-      var bl = boardsOf(S.mapId);
-      S.boardId = (bl.length ? bl[0] : newBoard(S.mapId, 'Default')).id;
+      S.boardId = pickBoardFor(S.mapId).id;
       fitView(); refresh(); syncUndoButtons();
     });
     $('boardsel').addEventListener('change', function () {
@@ -2600,7 +2768,7 @@
       sendBeat();
       prune();
       resync();
-      if (S.room && Date.now() - S.lastRx > 45000) joinRoom(S.room, true);
+      if (S.room && Date.now() - S.lastRx > 45000) reopen();
     });
   }
 
@@ -2823,6 +2991,7 @@
         if (st.showHills === false) S.showHills = false;
         if (st.flips) S.flips = st.flips;
         if (st.hidden) S.hidden = st.hidden;
+        if (st.lastSetup) S.lastSetup = st.lastSetup;
         S.clientId = st.clientId || S.clientId;
         if (st.mapId && S.maps.some(function (m) { return m.id === st.mapId; })) S.mapId = st.mapId;
         if (st.boardId && S.boards.some(function (b) { return b.id === st.boardId; })) S.boardId = st.boardId;
@@ -2836,7 +3005,7 @@
       if (S.mapId) {
         var bl = boardsOf(S.mapId);
         if (!S.boardId || !bl.some(function (b) { return b.id === S.boardId; })) {
-          S.boardId = (bl.length ? bl[0] : newBoard(S.mapId, 'Default')).id;
+          S.boardId = pickBoardFor(S.mapId).id;
         }
       }
 
@@ -2914,6 +3083,8 @@
   }
 
   /* Small read-only hook so a problem can be inspected from the console. */
+  window.__sbRender = function () { render(); };
+  window.__sbUndoLen = function () { return S.undo.length + '/' + S.redo.length; };
   window.__stratboard = function () {
     return {
       version: VERSION, room: S.room, maps: S.maps.length,
@@ -2921,6 +3092,8 @@
         return { name: m.name, bytes: m.buf ? m.buf.byteLength : 0, px: m.pxw + 'x' + m.pxh, rxid: m.rxid || null };
       }),
       mapId: S.mapId, boardId: S.boardId,
+      v: (function () { var c = null; S.boards.forEach(function (x) { if (x.id === S.boardId) c = x; }); return c ? c.v : null; })(),
+      gone: (function () { var c = null; S.boards.forEach(function (x) { if (x.id === S.boardId) c = x; }); return c ? (c.gone || []).length : null; })(),
       rxMeta: S.mapRx.meta, rxParts: Object.keys(S.mapRx.chunks).length,
       pendingState: !!S.pendingState,
       subs: S.pool ? Object.keys(S.pool.subs) : [],

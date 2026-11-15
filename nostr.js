@@ -245,7 +245,8 @@ var NostrLite = (function () {
     var self = this;
     if (this.closed) return;
     var existing = this.socks[url];
-    if (existing && (existing.ws.readyState === 0 || existing.ws.readyState === 1)) return;
+    if (existing && existing.ws &&
+        (existing.ws.readyState === 0 || existing.ws.readyState === 1)) return;
     var ws;
     try { ws = new WebSocket(url); } catch (e) { return; }
     var rec = { ws: ws, ok: false, tries: (existing && existing.tries) || 0 };
@@ -333,6 +334,24 @@ var NostrLite = (function () {
 
   /* Each subscription goes out as its own REQ. Relays cap how big a single
      filter may be, and one oversized REQ can take the whole socket down. */
+  /* Drop every socket and dial again, keeping the subscriptions. For a
+     connection that looks open but has stopped delivering, which a phone
+     hands back after sleeping. */
+  Pool.prototype.reconnect = function () {
+    var self = this;
+    Object.keys(this.socks).forEach(function (url) {
+      var rec = self.socks[url];
+      if (!rec) return;
+      rec.tries = 0;
+      try { if (rec.ws) { rec.ws.onclose = null; rec.ws.close(); } } catch (e) {}
+      rec.ws = null;
+      rec.ok = false;
+      rec.authed = false;
+    });
+    this.onstatus(this.status());
+    this.urls.forEach(function (url) { self._open(url); });
+  };
+
   Pool.prototype.sub = function (name, filters) {
     this.subs[name] = filters;
     var msg = JSON.stringify(['REQ', this.tag + name].concat(filters)), self = this;

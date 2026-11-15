@@ -54,6 +54,16 @@ players or draw. It is a courtesy between teammates rather than real security:
 anyone with the code shares the same key, so a determined person could ignore
 it. If the host drops off, the lock releases so the room is not stuck.
 
+## Everyone at once
+
+Several people can move players and draw at the same time. Each person's
+changes are folded together rather than the last one winning, so when the
+whole team drops their player at once, all four land. Anything deliberately
+erased or cleared stays gone, and undo puts it back for everybody.
+
+If a phone loses signal, it keeps working on its own and catches up when it
+comes back — and the work done while it was away is not lost either.
+
 ## Playing together
 
 First time you open it you get **Create a room** or **Join a room**.
