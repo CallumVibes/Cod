@@ -21,7 +21,7 @@ The six tools along the bottom:
 | --- | --- |
 | **Move** | Drag players around. Tap one to rename it. Hold the map to ping. |
 | **Ping** | Tap anywhere to flash a marker with your name on everyone's screen for five seconds. Nothing is saved — it is just for pointing. A few at a time, so nobody can bury the map under them. |
-| **Arrow** | Draw a rotation with your finger. |
+| **Arrow** | Draw a rotation with your finger. Pick a player first and the route is theirs — their colour, their name on it. |
 | **Mark** | Drop an X, or a piece of utility — smoke, flash, stun or frag — from the row that appears. Each has its own colour and says what it is. |
 | **Text** | Tap where you want it, type, and tap Place. Drag labels in Move mode. |
 | **Erase** | Tap an arrow, mark or label to remove it. |
@@ -33,6 +33,20 @@ Top right: undo, redo, **⚑** to save, **✕** to clear, **P** for hardpoints, 
 bottom; one press is for maps where the spawns are side to side. The map turns,
 the writing on it stays the right way up, and the whole room turns with you.
 Each map remembers how you left it.
+
+## Whose route is whose
+
+With the Arrow tool you get a row of your players. Tap one and the route you
+draw belongs to them: it takes their colour and carries their name, so four
+rotations on one map stay readable. **Any** goes back to picking a colour
+yourself.
+
+**Only** shows that player's routes and hides everyone else's — useful when a
+board gets busy and you want to talk through one person's game. It is just
+your view; it does not change what anyone else sees, and it clears when you
+leave the Arrow tool.
+
+Enemies work the same way, so you can draw how you think they rotate.
 
 ## Saving a setup
 

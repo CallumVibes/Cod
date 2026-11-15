@@ -90,6 +90,16 @@ border-bottom:1px solid var(--line)}
 position:absolute;left:0;right:0;top:0;z-index:5;background:rgba(13,15,19,.82);
 border-bottom:1px solid var(--line);pointer-events:none}
 #kinds.show{display:flex}
+/* whose route you are drawing */
+#who{display:none;gap:6px;padding:7px 8px;align-items:center;justify-content:center;
+position:absolute;left:0;right:0;top:49px;z-index:5;background:rgba(13,15,19,.82);
+border-bottom:1px solid var(--line);pointer-events:none;overflow-x:auto}
+#who.show{display:flex}
+#who button{pointer-events:auto;height:32px;min-height:32px;padding:0 10px;font-size:11px;
+color:var(--dim);white-space:nowrap}
+#who button[aria-pressed="true"]{color:#fff}
+#who button.on{border-width:2px}
+#who .only[aria-pressed="true"]{background:var(--blue);border-color:var(--blue);color:#fff}
 #kinds.under{top:49px}
 #kinds .kd{pointer-events:auto;height:32px;min-height:32px;padding:0 9px;font-size:11px;
 color:var(--dim);gap:4px}
@@ -175,6 +185,7 @@ padding:10px 14px;font-size:13.5px;box-shadow:0 6px 20px rgba(0,0,0,.45);text-al
   </div>
 
   <div id="stage">
+    <div id="who"></div>
     <div id="kinds">
     <button class="kd" data-kind="x" aria-pressed="true" aria-label="Plain mark"><i>&#10006;</i>Mark</button>
     <button class="kd" data-kind="smoke" aria-pressed="false" aria-label="Smoke">Smoke</button>

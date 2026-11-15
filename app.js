@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '5.1';
+  var VERSION = '5.2';
   /* Write-friendly public relays. relay.nostr.band is a search aggregator and
      nostr.wine is paid, so neither accepts writes from a fresh key. */
   var DEFAULT_RELAYS = [
@@ -203,6 +203,8 @@
     boardId: null,
     tool: 'move',
     markKind: 'x',
+    arrowOwn: '',
+    onlyOwn: false,
     colour: '#f5b708',
     view: { x: 0, y: 0, w: MAPW, h: MAPW },
     objUrl: null,
@@ -368,6 +370,40 @@
 
   /* Utility carries its own colour, because on a map a smoke being grey and
      a flash being yellow is read faster than any label. */
+  var ROUTE_B = ['#60a5fa', '#a78bfa', '#34d399', '#f97316'];
+  var ROUTE_R = ['#ef4444', '#e879f9', '#facc15', '#fda4af'];
+
+  function routeColour(t, idx) {
+    var pal = t && t.team === 'r' ? ROUTE_R : ROUTE_B;
+    return pal[(idx || 0) % pal.length];
+  }
+
+  function tokenById(id) {
+    var b = curBoard(), found = null;
+    if (!b || !id) return null;
+    b.tokens.forEach(function (t) { if (t.id === id) found = t; });
+    return found;
+  }
+
+  function colourForOwner(id) {
+    var t = tokenById(id);
+    return t ? routeColour(t, teamIndex(t)) : null;
+  }
+
+  /* Position within its own team, so the four blue players get four
+     different colours and the enemies get their own set. */
+  function teamIndex(t) {
+    var b = curBoard();
+    if (!b || !t) return 0;
+    var n = 0, out = 0;
+    b.tokens.forEach(function (o) {
+      if (o.team !== t.team) return;
+      if (o.id === t.id) out = n;
+      n++;
+    });
+    return out;
+  }
+
   var UTIL = {
     smoke: { c: '#cbd5e1', label: 'Smoke' },
     flash: { c: '#fbbf24', label: 'Flash' },
@@ -446,21 +482,29 @@
   /* ---------- rendering ---------- */
   var COLOURS = ['#f5b708', '#e9ebef', '#3b82f6', '#ef4444', '#22c55e'];
 
+  function addMarker(id, colour) {
+    var m = svgEl('marker', {
+      id: id, viewBox: '0 0 10 10', refX: '7.6', refY: '5',
+      markerWidth: '4.2', markerHeight: '4.2', orient: 'auto-start-reverse'
+    });
+    m.appendChild(svgEl('path', { d: 'M0,0.6 L10,5 L0,9.4 z', fill: colour }));
+    $('defs').appendChild(m);
+  }
+
   function ensureMarkers() {
     var defs = $('defs');
     if (defs.childNodes.length) return;
-    COLOURS.forEach(function (c, i) {
-      var m = svgEl('marker', {
-        id: 'ah' + i, viewBox: '0 0 10 10', refX: '7.6', refY: '5',
-        markerWidth: '4.2', markerHeight: '4.2', orient: 'auto-start-reverse'
-      });
-      m.appendChild(svgEl('path', { d: 'M0,0.6 L10,5 L0,9.4 z', fill: c }));
-      defs.appendChild(m);
-    });
+    COLOURS.forEach(function (c, i) { addMarker('ah' + i, c); });
   }
+
   function markerFor(c) {
     var i = COLOURS.indexOf(c);
-    return 'url(#ah' + (i < 0 ? 0 : i) + ')';
+    if (i >= 0) return 'url(#ah' + i + ')';
+    /* A colour outside the palette — a player's route — gets its own head. */
+    var id = 'ah_' + String(c || '').replace(/[^a-z0-9]/gi, '');
+    if (!id || id === 'ah_') return 'url(#ah0)';
+    if (!document.getElementById(id)) addMarker(id, c);
+    return 'url(#' + id + ')';
   }
 
   /* Keep the centre of the viewport over the map, so it can never be panned
@@ -586,6 +630,8 @@
     var sw = strokeW();
 
     b.arrows.forEach(function (a) {
+      /* "Only" hides everyone else's routes so a busy board can be read. */
+      if (S.onlyOwn && S.arrowOwn && a.own !== S.arrowOwn) return;
       var pts = a.pts.map(function (p) { return p[0] + ',' + p[1]; }).join(' ');
       var hit = svgEl('polyline', {
         points: pts, fill: 'none', stroke: 'rgba(0,0,0,0)',
@@ -601,6 +647,21 @@
       line.style.pointerEvents = 'none';
       $('gArrows').appendChild(hit);
       $('gArrows').appendChild(line);
+
+      var owner = a.own ? tokenById(a.own) : null;
+      if (owner && a.pts.length) {
+        /* A name at the start, so a board full of lines can be read without
+           tracing each one back to a player. */
+        var st = a.pts[0], col = a.c || '#f5b708';
+        var tag = svgEl('text', {
+          x: st[0], y: st[1] - sw * 1.4, 'text-anchor': 'middle',
+          'font-size': sw * 2.3, 'font-weight': '700', fill: col,
+          stroke: '#0a0c10', 'stroke-width': sw * 0.6, 'paint-order': 'stroke'
+        });
+        tag.textContent = (owner.n || '').slice(0, 5);
+        tag.style.pointerEvents = 'none';
+        $('gArrows').appendChild(tag);
+      }
     });
 
     b.marks.forEach(function (k) {
@@ -824,6 +885,12 @@
 
   function refresh(broadcast) {
     fillSelects();
+    var wh = $('who');
+    if (wh && wh.classList.contains('show')) {
+      /* A player renamed, added or removed changes the row. */
+      if (S.arrowOwn && !tokenById(S.arrowOwn)) { S.arrowOwn = ''; S.onlyOwn = false; }
+      buildWho();
+    }
     render();
     saveMeta();
     if (broadcast) queueSend();
@@ -838,7 +905,7 @@
     if (!m) return;
     /* The floating controls sit inside the board, so their taps bubble here.
        Without this, pressing Undo with the Mark tool active dropped a mark. */
-    if (e.target.closest && e.target.closest('#float, #banner, #blank, #swatch, #kinds')) return;
+    if (e.target.closest && e.target.closest('#float, #banner, #blank, #swatch, #kinds, #who')) return;
 
     /* Locked rooms stay pannable and pingable — just not editable. */
     if (!canEdit() && S.tool !== 'ping' && S.tool !== 'move') { denyEdit(); return; }
@@ -934,7 +1001,12 @@
 
     if (S.tool === 'arrow') {
       snapshot();
-      var ar = { id: uid(), c: S.colour, pts: [[p.x, p.y]] };
+      var ar = {
+        id: uid(),
+        own: S.arrowOwn || undefined,
+        c: (S.arrowOwn && colourForOwner(S.arrowOwn)) || S.colour,
+        pts: [[rnd(p.x), rnd(p.y)]]
+      };
       curBoard().arrows.push(ar);
       gest = { type: 'draw', arrow: ar };
       render();
@@ -2503,13 +2575,72 @@
   }
 
   /* ---------- wiring ---------- */
+  /* Rebuilt from the board, so renaming a player renames their chip and a
+     deleted player stops being offered. */
+  function buildWho() {
+    var box = $('who');
+    if (!box) return;
+    var b = curBoard();
+    box.textContent = '';
+    if (!b) return;
+    var any = document.createElement('button');
+    any.textContent = 'Any';
+    any.setAttribute('aria-pressed', S.arrowOwn ? 'false' : 'true');
+    any.addEventListener('click', function () { pickOwner(''); });
+    box.appendChild(any);
+
+    b.tokens.forEach(function (t) {
+      var col = routeColour(t, teamIndex(t));
+      var btn = document.createElement('button');
+      btn.textContent = (t.n || '?').slice(0, 5);
+      btn.style.borderColor = col;
+      btn.style.color = S.arrowOwn === t.id ? '#fff' : col;
+      btn.className = S.arrowOwn === t.id ? 'on' : '';
+      btn.setAttribute('aria-pressed', S.arrowOwn === t.id ? 'true' : 'false');
+      if (S.arrowOwn === t.id) btn.style.background = col;
+      btn.addEventListener('click', function () { pickOwner(t.id); });
+      box.appendChild(btn);
+    });
+
+    var only = document.createElement('button');
+    only.className = 'only';
+    only.textContent = 'Only';
+    only.setAttribute('aria-pressed', S.onlyOwn ? 'true' : 'false');
+    only.disabled = !S.arrowOwn;
+    only.addEventListener('click', function () {
+      if (!S.arrowOwn) { toast('Pick a player first'); return; }
+      S.onlyOwn = !S.onlyOwn;
+      buildWho();
+      render();
+    });
+    box.appendChild(only);
+  }
+
+  function pickOwner(id) {
+    S.arrowOwn = id;
+    if (!id) S.onlyOwn = false;
+    buildWho();
+    var sw = $('swatch');
+    if (sw) sw.classList.toggle('show', S.tool === 'arrow' && !id);
+    render();
+  }
+
   function setTool(t) {
     S.tool = t;
     var btns = document.querySelectorAll('#tools button');
     for (var i = 0; i < btns.length; i++) {
       btns[i].setAttribute('aria-pressed', btns[i].getAttribute('data-tool') === t ? 'true' : 'false');
     }
-    var sw = $('swatch'), kd = $('kinds');
+    var sw = $('swatch'), kd = $('kinds'), wh = $('who');
+    if (wh) {
+      var showWho = t === 'arrow';
+      /* Showing one player alone is a way of reading the board while you
+         draw, not a setting — leaving the tool must not strand the rest of
+         the routes hidden with no button in sight to bring them back. */
+      if (!showWho && S.onlyOwn) { S.onlyOwn = false; setTimeout(render, 0); }
+      if (showWho) buildWho();
+      wh.classList.toggle('show', showWho);
+    }
     if (kd) {
       /* Colours only matter for a plain mark — utility brings its own. */
       var showKinds = t === 'mark';
@@ -2522,7 +2653,8 @@
       banner('Tap the map to ping, or hold the map in Move.', 3000);
       return;
     }
-    if (t === 'arrow' || t === 'text' || (t === 'mark' && S.markKind === 'x')) {
+    if ((t === 'arrow' && !S.arrowOwn) || t === 'text' ||
+        (t === 'mark' && S.markKind === 'x')) {
       sw.classList.add('show');
     } else {
       sw.classList.remove('show');
