@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '5.2';
+  var VERSION = '5.3';
   /* Write-friendly public relays. relay.nostr.band is a search aggregator and
      nostr.wine is paid, so neither accepts writes from a fresh key. */
   var DEFAULT_RELAYS = [
@@ -905,7 +905,7 @@
     if (!m) return;
     /* The floating controls sit inside the board, so their taps bubble here.
        Without this, pressing Undo with the Mark tool active dropped a mark. */
-    if (e.target.closest && e.target.closest('#float, #banner, #blank, #swatch, #kinds, #who')) return;
+    if (e.target.closest && e.target.closest('#float, #banner, #blank, #swatch, #kinds, #who, #acts')) return;
 
     /* Locked rooms stay pannable and pingable — just not editable. */
     if (!canEdit() && S.tool !== 'ping' && S.tool !== 'move') { denyEdit(); return; }
@@ -1021,6 +1021,19 @@
 
     if (S.tool === 'mark') {
       snapshot();
+      if (S.markKind === 'enemy' || S.markKind === 'player') {
+        var team = S.markKind === 'enemy' ? 'r' : 'b';
+        var bT = curBoard();
+        snapshot();
+        var same = bT.tokens.filter(function (t) { return t.team === team; }).length;
+        bT.tokens.push({
+          id: uid(), team: team,
+          n: (team === 'r' ? 'E' : 'P') + (same + 1),
+          x: rnd(p.x), y: rnd(p.y), tv: topTv(bT.tokens) + 1, tb: S.clientId
+        });
+        render(); saveBoard();
+        return;
+      }
       var u = UTIL[S.markKind];
       curBoard().marks.push({
         id: uid(), x: rnd(p.x), y: rnd(p.y),
@@ -2622,6 +2635,7 @@
     buildWho();
     var sw = $('swatch');
     if (sw) sw.classList.toggle('show', S.tool === 'arrow' && !id);
+    stepFloat();
     render();
   }
 
@@ -2631,7 +2645,8 @@
     for (var i = 0; i < btns.length; i++) {
       btns[i].setAttribute('aria-pressed', btns[i].getAttribute('data-tool') === t ? 'true' : 'false');
     }
-    var sw = $('swatch'), kd = $('kinds'), wh = $('who');
+    var sw = $('swatch'), kd = $('kinds'), wh = $('who'), ac = $('acts');
+    if (ac) ac.classList.toggle('show', t === 'erase');
     if (wh) {
       var showWho = t === 'arrow';
       /* Showing one player alone is a way of reading the board while you
@@ -2645,11 +2660,11 @@
       /* Colours only matter for a plain mark — utility brings its own. */
       var showKinds = t === 'mark';
       kd.classList.toggle('show', showKinds);
-      kd.classList.toggle('under', showKinds && S.markKind === 'x');
       sw.classList.toggle('plainmark', showKinds);
     }
     if (t === 'ping') {
       sw.classList.remove('show');
+      stepFloat();
       banner('Tap the map to ping, or hold the map in Move.', 3000);
       return;
     }
@@ -2659,6 +2674,27 @@
     } else {
       sw.classList.remove('show');
     }
+    stepFloat();
+  }
+
+  /* How many rows are across the top right now, so undo and the rest can
+     stand clear of them instead of hiding underneath. */
+  function stepFloat() {
+    var st = $('stage');
+    if (!st) return;
+    /* A second row only sits lower while the colours are above it. */
+    var over = $('swatch') && $('swatch').classList.contains('show');
+    ['who', 'kinds'].forEach(function (id) {
+      var el = $(id);
+      if (el) el.classList.toggle('under', !!over);
+    });
+    var n = 0;
+    ['swatch', 'kinds', 'who', 'acts'].forEach(function (id) {
+      var el = $(id);
+      if (el && el.classList.contains('show')) n++;
+    });
+    st.classList.toggle('row1', n === 1);
+    st.classList.toggle('row2', n > 1);
   }
 
   function openSheet(id) { $(id).classList.add('open'); }
@@ -2749,6 +2785,12 @@
         setTool('mark');
       });
     });
+
+    [['actclear', 'clearmarks'], ['actreset', 'resetpos'], ['actdel', 'delboard']]
+      .forEach(function (pair) {
+        var btn = $(pair[0]);
+        if (btn) btn.addEventListener('click', function () { $(pair[1]).click(); });
+      });
 
     $('flipbtn').addEventListener('click', function () {
       var m = curMap();
@@ -2910,10 +2952,12 @@
       var b = curBoard(); if (!b) return;
       snapshot();
       var h = mapH();
+      var hadTv = topTv(b.tokens);
       b.tokens.forEach(function (t, i) {
         t.x = MAPW * (0.3 + (i % 5) * 0.1);
         t.y = h * (t.team === 'b' ? 0.84 : 0.16) + (Math.floor(i / 5) * h * 0.06);
       });
+      claimTokens(b.tokens, hadTv);
       render(); saveBoard(); toast('Players reset');
     });
 

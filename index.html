@@ -66,7 +66,10 @@ transform-origin:50% 50%}
 #blank{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;
 justify-content:center;gap:14px;padding:26px;text-align:center;color:var(--dim);font-size:14px}
 #blank h2{margin:0;font-size:17px;font-weight:500;color:var(--text)}
-#float{position:absolute;top:9px;right:9px;display:flex;flex-direction:column;gap:7px}
+#float{position:absolute;top:9px;right:9px;display:flex;flex-direction:column;gap:7px;
+transition:top .12s}
+#stage.row1 #float{top:55px}
+#stage.row2 #float{top:101px}
 #float button[aria-pressed="true"]{background:rgba(245,183,8,.18);border-color:#f5b708;color:#f5b708}
 #float button{width:40px;min-width:40px;height:40px;min-height:40px;padding:0;
 background:rgba(22,26,33,.9);border-color:#333b48;font-size:17px}
@@ -86,23 +89,36 @@ position:absolute;left:0;right:0;top:0;z-index:5;background:rgba(13,15,19,.82);
 border-bottom:1px solid var(--line)}
 #swatch.show{display:flex}
 /* utility picker, directly under the colours */
-#kinds{display:none;gap:6px;padding:7px 8px;align-items:center;justify-content:center;
+#kinds{display:none;gap:4px;padding:7px 4px;align-items:center;justify-content:center;
 position:absolute;left:0;right:0;top:0;z-index:5;background:rgba(13,15,19,.82);
 border-bottom:1px solid var(--line);pointer-events:none}
 #kinds.show{display:flex}
 /* whose route you are drawing */
 #who{display:none;gap:6px;padding:7px 8px;align-items:center;justify-content:center;
-position:absolute;left:0;right:0;top:49px;z-index:5;background:rgba(13,15,19,.82);
+position:absolute;left:0;right:0;top:0;z-index:5;background:rgba(13,15,19,.82);
 border-bottom:1px solid var(--line);pointer-events:none;overflow-x:auto}
 #who.show{display:flex}
+#who.under{top:49px}
 #who button{pointer-events:auto;height:32px;min-height:32px;padding:0 10px;font-size:11px;
 color:var(--dim);white-space:nowrap}
 #who button[aria-pressed="true"]{color:#fff}
 #who button.on{border-width:2px}
 #who .only[aria-pressed="true"]{background:var(--blue);border-color:var(--blue);color:#fff}
 #kinds.under{top:49px}
-#kinds .kd{pointer-events:auto;height:32px;min-height:32px;padding:0 9px;font-size:11px;
-color:var(--dim);gap:4px}
+#kinds{overflow-x:auto}
+/* the tidy-up actions, on the Erase tool */
+#acts{display:none;gap:6px;padding:7px 8px;align-items:center;justify-content:center;
+position:absolute;left:0;right:0;top:0;z-index:5;background:rgba(13,15,19,.82);
+border-bottom:1px solid var(--line);pointer-events:none;overflow-x:auto}
+#acts.show{display:flex}
+#acts button{pointer-events:auto;height:32px;min-height:32px;padding:0 9px;font-size:10.5px;
+color:var(--dim);flex:none;white-space:nowrap}
+#kinds .kd{pointer-events:auto;height:32px;min-height:32px;padding:0 5px;font-size:10px;
+color:var(--dim);gap:3px;flex:none}
+#kinds .kd.mate{border-color:#3b82f6;color:#60a5fa}
+#kinds .kd.mate[aria-pressed="true"]{background:#3b82f6;border-color:#3b82f6;color:#fff}
+#kinds .kd.enemy{border-color:#ef4444;color:#ef4444}
+#kinds .kd.enemy[aria-pressed="true"]{background:#ef4444;border-color:#ef4444;color:#fff}
 #kinds .kd i{font-style:normal;font-size:13px}
 #kinds .kd[aria-pressed="true"]{background:var(--blue);border-color:var(--blue);color:#fff}
 /* the bar floats over the board, so only its buttons may take taps */
@@ -185,13 +201,20 @@ padding:10px 14px;font-size:13.5px;box-shadow:0 6px 20px rgba(0,0,0,.45);text-al
   </div>
 
   <div id="stage">
+    <div id="acts">
+    <button id="actclear">Clear drawing</button>
+    <button id="actreset">Reset players</button>
+    <button id="actdel" class="danger">Delete setup</button>
+    </div>
     <div id="who"></div>
     <div id="kinds">
-    <button class="kd" data-kind="x" aria-pressed="true" aria-label="Plain mark"><i>&#10006;</i>Mark</button>
+    <button class="kd" data-kind="x" aria-pressed="true" aria-label="Plain mark">Mark</button>
     <button class="kd" data-kind="smoke" aria-pressed="false" aria-label="Smoke">Smoke</button>
     <button class="kd" data-kind="flash" aria-pressed="false" aria-label="Flash">Flash</button>
     <button class="kd" data-kind="stun" aria-pressed="false" aria-label="Stun">Stun</button>
     <button class="kd" data-kind="frag" aria-pressed="false" aria-label="Frag">Frag</button>
+    <button class="kd mate" data-kind="player" aria-pressed="false" aria-label="Place a player">+Player</button>
+    <button class="kd enemy" data-kind="enemy" aria-pressed="false" aria-label="Place an enemy">+Enemy</button>
     </div>
     <div id="swatch">
     <button class="sw" data-col="#f5b708" style="background:#f5b708" aria-label="Yellow" aria-pressed="true"></button>
