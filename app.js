@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '4.7';
+  var VERSION = '4.8';
   /* Write-friendly public relays. relay.nostr.band is a search aggregator and
      nostr.wine is paid, so neither accepts writes from a fresh key. */
   var DEFAULT_RELAYS = [
