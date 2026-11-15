@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '5.0';
+  var VERSION = '5.1';
   /* Write-friendly public relays. relay.nostr.band is a search aggregator and
      nostr.wine is paid, so neither accepts writes from a fresh key. */
   var DEFAULT_RELAYS = [
@@ -30,6 +30,44 @@
   /* ---------- tiny DOM helpers ---------- */
   var $ = function (id) { return document.getElementById(id); };
   var SVGNS = 'http://www.w3.org/2000/svg';
+  /* Simple shapes rather than letters: they stay readable when the map is
+     turned, and at the size a phone draws them. */
+  function drawUtil(g, kind, x, y, r, col, sw) {
+    var w = sw * 0.5;
+    if (kind === 'smoke') {
+      [[-0.42, 0.12, 0.42], [0.42, 0.12, 0.42], [0, -0.22, 0.5]].forEach(function (c) {
+        g.appendChild(svgEl('circle', {
+          cx: x + r * c[0], cy: y + r * c[1], r: r * c[2],
+          fill: 'none', stroke: col, 'stroke-width': w
+        }));
+      });
+      return;
+    }
+    if (kind === 'flash') {
+      var pts = [], i;
+      for (i = 0; i < 8; i++) {
+        var ang = (Math.PI / 4) * i, rad = i % 2 ? r * 0.26 : r * 0.72;
+        pts.push((x + Math.cos(ang) * rad).toFixed(1) + ',' + (y + Math.sin(ang) * rad).toFixed(1));
+      }
+      g.appendChild(svgEl('polygon', { points: pts.join(' '), fill: col }));
+      return;
+    }
+    if (kind === 'stun') {
+      [0.3, 0.52, 0.74].forEach(function (f) {
+        g.appendChild(svgEl('circle', {
+          cx: x, cy: y, r: r * f, fill: 'none', stroke: col, 'stroke-width': w
+        }));
+      });
+      return;
+    }
+    // frag
+    g.appendChild(svgEl('circle', { cx: x, cy: y + r * 0.1, r: r * 0.46, fill: col }));
+    g.appendChild(svgEl('rect', {
+      x: x - r * 0.16, y: y - r * 0.72, width: r * 0.32, height: r * 0.34,
+      rx: r * 0.08, fill: col
+    }));
+  }
+
   function svgEl(name, attrs) {
     var n = document.createElementNS(SVGNS, name);
     if (attrs) for (var k in attrs) n.setAttribute(k, attrs[k]);
@@ -44,6 +82,7 @@
   function toast(msg, ms) {
     var box = $('toast'), d = document.createElement('div');
     d.textContent = msg;
+    while (box.childNodes.length > 1) box.removeChild(box.firstChild);
     box.appendChild(d);
     setTimeout(function () {
       d.style.opacity = '0';
@@ -163,6 +202,7 @@
     mapId: null,
     boardId: null,
     tool: 'move',
+    markKind: 'x',
     colour: '#f5b708',
     view: { x: 0, y: 0, w: MAPW, h: MAPW },
     objUrl: null,
@@ -325,6 +365,15 @@
 
   /* ---------- undo ---------- */
   function clone(x) { return JSON.parse(JSON.stringify(x || [])); }
+
+  /* Utility carries its own colour, because on a map a smoke being grey and
+     a flash being yellow is read faster than any label. */
+  var UTIL = {
+    smoke: { c: '#cbd5e1', label: 'Smoke' },
+    flash: { c: '#fbbf24', label: 'Flash' },
+    stun:  { c: '#38bdf8', label: 'Stun' },
+    frag:  { c: '#fb7185', label: 'Frag' }
+  };
 
   function rnd(n) { return Math.round(n * 10) / 10; }
 
@@ -556,6 +605,25 @@
 
     b.marks.forEach(function (k) {
       var r = sw * 1.9, g = svgEl('g', { 'data-kind': 'mark', 'data-id': k.id });
+      var u = UTIL[k.k];
+      if (u) {
+        var col = k.c || u.c, rr = sw * 2.9;
+        g.appendChild(svgEl('circle', {
+          cx: k.x, cy: k.y, r: rr, fill: 'rgba(10,12,16,.72)',
+          stroke: col, 'stroke-width': sw * 0.55
+        }));
+        drawUtil(g, k.k, k.x, k.y, rr, col, sw);
+        var cap = svgEl('text', {
+          x: k.x, y: k.y + rr * 2.05, 'text-anchor': 'middle',
+          'font-size': rr * 0.8, 'font-weight': '600', fill: col,
+          stroke: '#0a0c10', 'stroke-width': sw * 0.5, 'paint-order': 'stroke'
+        });
+        cap.textContent = u.label;
+        g.appendChild(cap);
+        g.appendChild(svgEl('circle', { cx: k.x, cy: k.y, r: rr * 1.5, fill: 'rgba(0,0,0,0)' }));
+        $('gMarks').appendChild(g);
+        return;
+      }
       g.appendChild(svgEl('line', {
         x1: k.x - r, y1: k.y - r, x2: k.x + r, y2: k.y + r,
         stroke: k.c || '#ef4444', 'stroke-width': sw, 'stroke-linecap': 'round'
@@ -770,7 +838,7 @@
     if (!m) return;
     /* The floating controls sit inside the board, so their taps bubble here.
        Without this, pressing Undo with the Mark tool active dropped a mark. */
-    if (e.target.closest && e.target.closest('#float, #banner, #blank, #swatch')) return;
+    if (e.target.closest && e.target.closest('#float, #banner, #blank, #swatch, #kinds')) return;
 
     /* Locked rooms stay pannable and pingable — just not editable. */
     if (!canEdit() && S.tool !== 'ping' && S.tool !== 'move') { denyEdit(); return; }
@@ -881,7 +949,11 @@
 
     if (S.tool === 'mark') {
       snapshot();
-      curBoard().marks.push({ id: uid(), x: rnd(p.x), y: rnd(p.y), c: S.colour });
+      var u = UTIL[S.markKind];
+      curBoard().marks.push({
+        id: uid(), x: rnd(p.x), y: rnd(p.y),
+        c: u ? u.c : S.colour, k: u ? S.markKind : undefined
+      });
       render(); saveBoard();
       gest = { type: 'none' };
       return;
@@ -2437,13 +2509,20 @@
     for (var i = 0; i < btns.length; i++) {
       btns[i].setAttribute('aria-pressed', btns[i].getAttribute('data-tool') === t ? 'true' : 'false');
     }
-    var sw = $('swatch');
+    var sw = $('swatch'), kd = $('kinds');
+    if (kd) {
+      /* Colours only matter for a plain mark — utility brings its own. */
+      var showKinds = t === 'mark';
+      kd.classList.toggle('show', showKinds);
+      kd.classList.toggle('under', showKinds && S.markKind === 'x');
+      sw.classList.toggle('plainmark', showKinds);
+    }
     if (t === 'ping') {
       sw.classList.remove('show');
       banner('Tap the map to ping, or hold the map in Move.', 3000);
       return;
     }
-    if (t === 'arrow' || t === 'mark' || t === 'text') {
+    if (t === 'arrow' || t === 'text' || (t === 'mark' && S.markKind === 'x')) {
       sw.classList.add('show');
     } else {
       sw.classList.remove('show');
@@ -2527,6 +2606,16 @@
       refresh(); saveMeta();
       if (S.room) { publishRoomState(); boardsOf(m.id).forEach(publishBoard); }
       toast('Added ' + made + ' setup' + (made === 1 ? '' : 's') + ' for ' + m.name);
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll('#kinds .kd'), function (btn) {
+      btn.addEventListener('click', function () {
+        S.markKind = btn.getAttribute('data-kind');
+        Array.prototype.forEach.call(document.querySelectorAll('#kinds .kd'), function (o) {
+          o.setAttribute('aria-pressed', o === btn ? 'true' : 'false');
+        });
+        setTool('mark');
+      });
     });
 
     $('flipbtn').addEventListener('click', function () {

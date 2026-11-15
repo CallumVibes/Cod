@@ -22,7 +22,7 @@ The six tools along the bottom:
 | **Move** | Drag players around. Tap one to rename it. Hold the map to ping. |
 | **Ping** | Tap anywhere to flash a marker with your name on everyone's screen for five seconds. Nothing is saved — it is just for pointing. A few at a time, so nobody can bury the map under them. |
 | **Arrow** | Draw a rotation with your finger. |
-| **Mark** | Drop an X. |
+| **Mark** | Drop an X, or a piece of utility — smoke, flash, stun or frag — from the row that appears. Each has its own colour and says what it is. |
 | **Text** | Tap where you want it, type, and tap Place. Drag labels in Move mode. |
 | **Erase** | Tap an arrow, mark or label to remove it. |
 

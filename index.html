@@ -85,6 +85,16 @@ border-radius:999px;padding:5px 13px;pointer-events:none}
 position:absolute;left:0;right:0;top:0;z-index:5;background:rgba(13,15,19,.82);
 border-bottom:1px solid var(--line)}
 #swatch.show{display:flex}
+/* utility picker, directly under the colours */
+#kinds{display:none;gap:6px;padding:7px 8px;align-items:center;justify-content:center;
+position:absolute;left:0;right:0;top:0;z-index:5;background:rgba(13,15,19,.82);
+border-bottom:1px solid var(--line);pointer-events:none}
+#kinds.show{display:flex}
+#kinds.under{top:49px}
+#kinds .kd{pointer-events:auto;height:32px;min-height:32px;padding:0 9px;font-size:11px;
+color:var(--dim);gap:4px}
+#kinds .kd i{font-style:normal;font-size:13px}
+#kinds .kd[aria-pressed="true"]{background:var(--blue);border-color:var(--blue);color:#fff}
 /* the bar floats over the board, so only its buttons may take taps */
 #swatch{pointer-events:none}
 #swatch .sw{pointer-events:auto}
@@ -165,6 +175,13 @@ padding:10px 14px;font-size:13.5px;box-shadow:0 6px 20px rgba(0,0,0,.45);text-al
   </div>
 
   <div id="stage">
+    <div id="kinds">
+    <button class="kd" data-kind="x" aria-pressed="true" aria-label="Plain mark"><i>&#10006;</i>Mark</button>
+    <button class="kd" data-kind="smoke" aria-pressed="false" aria-label="Smoke">Smoke</button>
+    <button class="kd" data-kind="flash" aria-pressed="false" aria-label="Flash">Flash</button>
+    <button class="kd" data-kind="stun" aria-pressed="false" aria-label="Stun">Stun</button>
+    <button class="kd" data-kind="frag" aria-pressed="false" aria-label="Frag">Frag</button>
+    </div>
     <div id="swatch">
     <button class="sw" data-col="#f5b708" style="background:#f5b708" aria-label="Yellow" aria-pressed="true"></button>
     <button class="sw" data-col="#e9ebef" style="background:#e9ebef" aria-label="White" aria-pressed="false"></button>
