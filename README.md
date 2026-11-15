@@ -101,8 +101,8 @@ would have to guess your code rather than read it off a relay.
 
 ## Who you are
 
-There are no names. You pick a role in the menu — **AR, Sub, Flex, Anch** or
-**Watching** — and that is what the team sees on your pings. Joining a room
+There are no names. You pick a role in the menu — **AR, Sub, Flex, Anch** — and that is what the
+team sees on your pings. Joining a room
 takes a free role for you, and if two phones land on the same one they sort it
 out between themselves, so normally there is nothing to do. Nothing personal
 goes over the relays.
@@ -163,7 +163,7 @@ somewhere safe, or use **Restore** on a new phone to pick up where you left off.
 ## How it works
 
 A static site — no server, no accounts, no tracking. Your maps and setups are
-stored on your own device. Live rooms go over public [Nostr](https://nostr.com)
+stored on your own device. Live rooms go over four public [Nostr](https://nostr.com)
 relays: the room code becomes a keypair, so anyone with the code can read and
 write the room and nobody else can find it.
 

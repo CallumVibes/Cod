@@ -2,17 +2,16 @@
 (function () {
   'use strict';
 
-  var VERSION = '6.0';
+  var VERSION = '6.1';
   /* Write-friendly public relays. relay.nostr.band is a search aggregator and
      nostr.wine is paid, so neither accepts writes from a fresh key. */
   var DEFAULT_RELAYS = [
-    'wss://relay.damus.io',
     'wss://nos.lol',
     'wss://relay.primal.net',
     'wss://nostr.mom',
-    'wss://nostr.oxtr.dev',
-    'wss://nostr-pub.wellorder.net'
+    'wss://relay.damus.io'
   ];
+  var RELAY_SET = 2;          // bump to move everyone onto a new list
   /* Known not to take writes from a fresh key: paid, search-only, or gated
      behind someone vouching for you — offchain.pub turns a new room key away
      with "not in our web of trust". */
@@ -363,7 +362,8 @@
     dbPut('meta', {
       k: 'settings', mapId: S.mapId, boardId: S.boardId, role: S.role, showHills: S.showHills,
       flips: S.flips, rots: S.rots, hidden: S.hidden, lastSetup: S.lastSetup,
-      room: S.room, relays: S.relays, colour: S.colour, clientId: S.clientId
+      room: S.room, relays: S.relays, relaySet: RELAY_SET,
+      colour: S.colour, clientId: S.clientId
     });
   }
 
@@ -475,7 +475,7 @@
     if (!box) return;
     box.textContent = '';
     var taken = rolesTaken();
-    ROLES.concat([WATCHING]).forEach(function (r) {
+    ROLES.forEach(function (r) {
       var btn = document.createElement('button');
       btn.textContent = r;
       var mine = myLabel() === r;
@@ -490,7 +490,7 @@
     if (note) {
       note.textContent = (S.role && taken[S.role])
         ? 'Someone else is also ' + S.role + ' — one of you should switch.'
-        : '';
+        : (!S.role && S.room) ? 'All four taken — you are watching.' : '';
     }
   }
 
@@ -3453,6 +3453,9 @@
       if (st) {
         S.role = st.role || '';
         S.relays = (st.relays && st.relays.length) ? st.relays : DEFAULT_RELAYS.slice();
+        /* An older build saved a longer list; move it on rather than leaving
+           phones paying for relays we no longer use. */
+        if ((st.relaySet || 0) < RELAY_SET) S.relays = DEFAULT_RELAYS.slice();
         /* Drop relays that refuse writes, and top the list back up. */
         S.relays = S.relays.filter(function (u) {
           var bad = BAD_RELAYS.some(function (b) { return u.indexOf(b) >= 0; });
@@ -3574,6 +3577,7 @@
         return { name: m.name, bytes: m.buf ? m.buf.byteLength : 0, px: m.pxw + 'x' + m.pxh, rxid: m.rxid || null };
       }),
       mapId: S.mapId, boardId: S.boardId,
+      relayList: S.relays.slice(),
       v: (function () { var c = null; S.boards.forEach(function (x) { if (x.id === S.boardId) c = x; }); return c ? c.v : null; })(),
       gone: (function () { var c = null; S.boards.forEach(function (x) { if (x.id === S.boardId) c = x; }); return c ? (c.gone || []).length : null; })(),
       rxMeta: S.mapRx.meta, rxParts: Object.keys(S.mapRx.chunks).length,
