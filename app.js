@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '4.9';
+  var VERSION = '5.0';
   /* Write-friendly public relays. relay.nostr.band is a search aggregator and
      nostr.wine is paid, so neither accepts writes from a fresh key. */
   var DEFAULT_RELAYS = [
@@ -263,6 +263,25 @@
     }) && JSON.stringify(b.arrows) === JSON.stringify(base.arrows) &&
        JSON.stringify(b.marks) === JSON.stringify(base.marks) &&
        JSON.stringify(b.labels) === JSON.stringify(base.labels);
+  }
+
+  /* One-off tidy-up for setups that gained a second copy of the team before
+     the merge was fixed. Same name, same player. */
+  function dedupeTokens(b) {
+    if (!b || !b.tokens || b.tokens.length < 2) return false;
+    var seen = {}, keep = [], dropped = [];
+    b.tokens.forEach(function (t) {
+      var key = (t.n || '') + '|' + (t.team || '');
+      var at = seen[key];
+      if (at === undefined) { seen[key] = keep.length; keep.push(t); return; }
+      /* Keep whichever copy was moved last; the other is the stray. */
+      if ((t.tv || 0) > (keep[at].tv || 0)) { dropped.push(keep[at].id); keep[at] = t; }
+      else dropped.push(t.id);
+    });
+    if (!dropped.length) return false;
+    b.tokens = keep;
+    forget(b, dropped);
+    return true;
   }
 
   function newBoard(mapId, name) {
@@ -1471,7 +1490,22 @@
     return PING_COLOURS[h % PING_COLOURS.length];
   }
 
-  function showPing(x, y, name, colour) {
+  var PING_PER_PERSON = 3;    // rings one person can have up at once
+  var PING_ON_SCREEN = 10;    // rings on the board from everyone
+
+  /* Without a cap a single excited teammate can bury the map under rings. */
+  function trimPings(who) {
+    var box = $('gPings');
+    if (!box) return;
+    var mine = [], all = box.childNodes;
+    for (var i = 0; i < all.length; i++) {
+      if (all[i].getAttribute && all[i].getAttribute('data-who') === who) mine.push(all[i]);
+    }
+    while (mine.length > PING_PER_PERSON) box.removeChild(mine.shift());
+    while (box.childNodes.length > PING_ON_SCREEN) box.removeChild(box.firstChild);
+  }
+
+  function showPing(x, y, name, colour, who) {
     var r0 = clamp(S.view.w / 26, 10, 46);
     /* Everything sits in a translated group so the ring can scale about its
        own centre, and each ping animates from the moment it is added. */
@@ -1494,14 +1528,25 @@
     }
     g.appendChild(ring);
     g.appendChild(body);
+    g.setAttribute('data-who', who || name || '?');
     $('gPings').appendChild(g);
+    trimPings(g.getAttribute('data-who'));
     uprightTexts(g);
     setTimeout(function () { if (g.parentNode) g.parentNode.removeChild(g); }, 5000);
   }
 
   function sendPing(p) {
-    var m = curMap();
-    showPing(p.x, p.y, S.nick || 'You', colourFor(S.clientId));
+    var m = curMap(), now = Date.now();
+    /* A ping is for pointing at something, not for drumming on the screen. */
+    function easeOff() {
+      if (now - (S.pingNag || 0) > 4000) { S.pingNag = now; toast('Easy with the pings'); }
+    }
+    if (now - (S.pingAt || 0) < 600) { easeOff(); return; }
+    S.pingBurst = (S.pingBurst || []).filter(function (t) { return now - t < 4000; });
+    if (S.pingBurst.length >= 4) { easeOff(); return; }
+    S.pingBurst.push(now);
+    S.pingAt = now;
+    showPing(p.x, p.y, S.nick || 'You', colourFor(S.clientId), S.clientId);
     if (!S.pool || !S.roomSk) return;
     NostrLite.finalize({
       kind: 20003, tags: [['d', roomTag()]],
@@ -1851,20 +1896,17 @@
   }
 
   function mergeTokens(winner, loser, gone) {
-    var byId = {}, order = [];
-    function take(list) {
-      (list || []).forEach(function (t) {
-        if (!t || !t.id || gone[t.id]) return;
-        var had = byId[t.id];
-        if (!had) { byId[t.id] = t; order.push(t.id); return; }
-        /* Whoever moved this player most recently keeps it, whatever else
-           changed on the board. */
-        if ((t.tv || 0) > (had.tv || 0)) byId[t.id] = t;   // ties keep the winner's
-      });
-    }
-    take(winner);
-    take(loser);
-    return order.map(function (id) { return byId[id]; });
+    var ours = {};
+    (loser || []).forEach(function (t) { if (t && t.id) ours[t.id] = t; });
+    return (winner || []).filter(function (t) {
+      return t && t.id && !gone[t.id];
+    }).map(function (t) {
+      var mine = ours[t.id];
+      /* We moved this player more recently than they did, so keep him where
+         we put him — everything else about the team comes from them. */
+      if (mine && (mine.tv || 0) > (t.tv || 0)) return mine;
+      return t;
+    });
   }
 
   function applyBoard(data) {
@@ -1895,14 +1937,15 @@
 
     var win = theirsWins ? data : target, lose = theirsWins ? target : data;
     var before = (data.arrows || []).length + (data.marks || []).length +
-                 (data.labels || []).length;
+                 (data.labels || []).length + (data.tokens || []).length;
     target.tokens = mergeTokens(win.tokens || [], lose.tokens || [], gone);
     target.arrows = mergeLists(win.arrows || [], lose.arrows || [], gone);
     target.marks = mergeLists(win.marks || [], lose.marks || [], gone);
     target.labels = mergeLists(win.labels || [], lose.labels || [], gone);
     /* We are holding something they have not got — hand it back, or their
        screen quietly stays short of an idea somebody drew. */
-    if (target.arrows.length + target.marks.length + target.labels.length !== before) {
+    if (target.arrows.length + target.marks.length + target.labels.length +
+        target.tokens.length !== before) {
       nudge(target);
     }
     if (data.name && data.name !== target.name) target.name = data.name;
@@ -2023,7 +2066,7 @@
       var m = curMap();
       if (data.map && m && data.map !== m.name) return;   // pointing at another map
       S.members[data.c] = { n: data.n || 'Player', t: Date.now() };
-      showPing(data.x, data.y, data.n || 'Player', colourFor(data.c));
+      showPing(data.x, data.y, data.n || 'Player', colourFor(data.c), data.c || data.n);
       renderMembers();
       return;
     }
@@ -2746,25 +2789,6 @@
     });
 
     $('leaveroom').addEventListener('click', function () { leaveRoom(); });
-    $('sendmap').addEventListener('click', function () {
-      if (!curMap()) { toast('No map to send'); return; }
-      if (!S.room || !S.pool) {
-        var typed = $('roomcode').value.trim();
-        if (!typed) { toast('Type a room code first'); return; }
-        ask({
-          title: 'Start the room?',
-          body: 'You are not in "' + typed + '" yet. Start it and send the map?',
-          okText: 'Start and send'
-        }).then(function (r) {
-          if (r.action !== 'ok') return;
-          joinRoom(typed);
-          setTimeout(function () { publishMap(true); }, 2200);
-        });
-        return;
-      }
-      if (!curMap().bundled) toast('Sending map…');
-      publishMap(true);
-    });
 
 
     $('resetapp').addEventListener('click', function () {
@@ -2996,6 +3020,9 @@
       (res[4] || []).forEach(function (row) { S.hills[row.k] = row.pts || []; });
       S.maps = res[0].sort(function (a, b) { return a.created - b.created; });
       S.boards = res[1];
+      S.boards.forEach(function (b) {
+        if (dedupeTokens(b)) dbPut('boards', b);   // tidy a doubled-up team
+      });
       var bundled = res[3] || [];
 
       /* Clear up duplicate maps left by the transfer race: same name, same
@@ -3164,6 +3191,7 @@
 
   /* Small read-only hook so a problem can be inspected from the console. */
   window.__sbRender = function () { render(); };
+  window.__sbBoardRef = function () { return curBoard(); };
   window.__sbUndoLen = function () { return S.undo.length + '/' + S.redo.length; };
   window.__stratboard = function () {
     return {
