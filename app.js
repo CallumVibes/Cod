@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '4.5';
+  var VERSION = '4.7';
   /* Write-friendly public relays. relay.nostr.band is a search aggregator and
      nostr.wine is paid, so neither accepts writes from a fresh key. */
   var DEFAULT_RELAYS = [
@@ -81,7 +81,14 @@
       extra.style.display = 'none';
     }
     m.classList.add('open');
-    if (opts.field) setTimeout(function () { input.focus(); input.select(); }, 60);
+    if (opts.field) {
+      /* Android only raises the keyboard for a focus it can trace back to
+         the person's own tap, so take it immediately where we can. */
+      try { input.focus(); input.select(); } catch (e2) {}
+      setTimeout(function () {
+        if (document.activeElement !== input) { try { input.focus(); input.select(); } catch (e2) {} }
+      }, 60);
+    }
     return new Promise(function (res) { modalResolve = res; });
   }
   function done(action) {
@@ -179,6 +186,7 @@
     wantTimer: null,
     rxTimer: null,
     relayFallback: null,
+    stamps: {},
     lastRx: 0,
     seenBoard: {},
     notices: [],
@@ -216,10 +224,38 @@
     return shown.length ? shown : S.maps;       // never leave the picker empty
   }
 
-  /* Where the players sit on a fresh setup — the spots the clear button
-     puts them back to. */
+  /* Where the players sit on a brand-new setup. */
   function homeSpot(k, h) {
     return { x: MAPW * (0.32 + k * 0.12), y: (h || MAPW) * 0.82 };
+  }
+
+  /* What the clear button goes back to: whatever was saved as this setup's
+     default, or the starting line-up if nothing has been saved yet. */
+  function baseOf(b) {
+    if (b && b.base && b.base.tokens && b.base.tokens.length) return b.base;
+    var m = curMap(), h = m ? m.h : MAPW;
+    return {
+      tokens: (b && b.tokens ? b.tokens : []).map(function (t, k) {
+        var sp = homeSpot(k, h);
+        return { id: t.id, n: t.n, team: t.team, x: sp.x, y: sp.y };
+      }),
+      arrows: [], marks: [], labels: []
+    };
+  }
+
+  function sameAsBase(b) {
+    if (!b) return true;
+    var base = baseOf(b);
+    if (b.arrows.length !== base.arrows.length) return false;
+    if (b.marks.length !== base.marks.length) return false;
+    if (b.labels.length !== base.labels.length) return false;
+    if (b.tokens.length !== base.tokens.length) return false;
+    return b.tokens.every(function (t, k) {
+      var o = base.tokens[k];
+      return o && Math.abs(t.x - o.x) <= 1 && Math.abs(t.y - o.y) <= 1 && t.n === o.n;
+    }) && JSON.stringify(b.arrows) === JSON.stringify(base.arrows) &&
+       JSON.stringify(b.marks) === JSON.stringify(base.marks) &&
+       JSON.stringify(b.labels) === JSON.stringify(base.labels);
   }
 
   function newBoard(mapId, name) {
@@ -247,6 +283,7 @@
     /* We have just changed this board ourselves, so an incoming copy that
        matches an earlier one is news again, not a repeat. */
     delete S.seenBoard[b.id];
+    b.v = (b.v || 0) + 1;
     b.updated = Date.now();
     dbPut('boards', b);
     if (broadcast !== false) queueSend();
@@ -260,6 +297,8 @@
   }
 
   /* ---------- undo ---------- */
+  function clone(x) { return JSON.parse(JSON.stringify(x || [])); }
+
   function snapshot() {
     var b = curBoard();
     if (!b) return;
@@ -748,14 +787,7 @@
     }
 
     if (S.tool === 'text') {
-      gest = { type: 'none' };
-      ask({ title: 'Label', field: true, placeholder: 'Flash here', maxLength: 22, okText: 'Place' })
-        .then(function (r) {
-          if (r.action !== 'ok' || !r.value) return;
-          snapshot();
-          curBoard().labels.push({ id: uid(), x: p.x, y: p.y, t: r.value, c: S.colour });
-          render(); saveBoard();
-        });
+      gest = { type: 'text', p: p, c0: { x: e.clientX, y: e.clientY } };
     }
   }
 
@@ -763,6 +795,11 @@
     if (!ptrs[e.pointerId]) return;
     ptrs[e.pointerId] = { x: e.clientX, y: e.clientY };
     if (!gest) return;
+
+    if (gest.type === 'text') {
+      if (Math.abs(e.clientX - gest.c0.x) + Math.abs(e.clientY - gest.c0.y) > 12) gest.moved = true;
+      return;
+    }
 
     if (gest.type === 'hold') {
       if (!gest.moved && Math.abs(e.clientX - gest.c0.x) + Math.abs(e.clientY - gest.c0.y) > 8) {
@@ -812,6 +849,23 @@
     if (!gest) return;
 
     if (remaining > 0) return;
+
+    if (gest.type === 'text') {
+      var at = gest.p, dropped = !gest.moved;
+      gest = null;
+      if (!dropped) return;
+      /* Opened straight from the finger lifting, so the keyboard counts as
+         asked for by the person and actually stays up. */
+      ask({ title: 'Label', field: true, placeholder: 'Flash here', maxLength: 22,
+            okText: 'Place' })
+        .then(function (r) {
+          if (r.action !== 'ok' || !r.value) return;
+          snapshot();
+          curBoard().labels.push({ id: uid(), x: at.x, y: at.y, t: r.value, c: S.colour });
+          render(); saveBoard();
+        });
+      return;
+    }
 
     if (gest.type === 'drag' && !gest.moved) {
       S.undo.pop(); syncUndoButtons();
@@ -1513,18 +1567,31 @@
   function publishRoomState() {
     if (!S.pool || !S.roomSk || !S.room) return;
     NostrLite.finalize({
-      kind: 30078, tags: [['d', roomTag()]], content: roomStatePayload()
+      kind: 30078, created_at: stampFor('state'), tags: [['d', roomTag()]], content: roomStatePayload()
     }, S.roomSk).then(function (ev) { if (S.pool) S.pool.publish(ev); }).catch(function () {});
+  }
+
+  /* Relay timestamps are whole seconds, and when two copies share a second
+     the relay keeps whichever it likes — which meant a replay could hand
+     back a half-finished board and rub out live work. Our own stamps are
+     forced upwards so the relay always holds the newest, and the counter
+     below settles it for good. */
+  function stampFor(key) {
+    var now = Math.floor(Date.now() / 1000);
+    var last = S.stamps[key] || 0;
+    S.stamps[key] = now > last ? now : last + 1;
+    return S.stamps[key];
   }
 
   function publishBoard(b) {
     if (!S.pool || !S.roomSk || !S.room || !b) return;
     if ((b.room || '') !== S.room) return;
     NostrLite.finalize({
-      kind: 30078, tags: [['d', boardTag(b.id)]],
+      kind: 30078, created_at: stampFor('b:' + b.id), tags: [['d', boardTag(b.id)]],
       content: JSON.stringify({
         by: S.clientId, id: b.id, name: b.name, tokens: b.tokens,
-        arrows: b.arrows, marks: b.marks, labels: b.labels
+        arrows: b.arrows, marks: b.marks, labels: b.labels, base: b.base || null,
+        v: b.v || 0
       })
     }, S.roomSk).then(function (ev) { if (S.pool) S.pool.publish(ev); }).catch(function () {});
   }
@@ -1637,11 +1704,22 @@
     var target = null;
     S.boards.forEach(function (b) { if (b.id === data.id) target = b; });
     if (!target) return;
+    /* Older than what we already have — a replay of something we have moved
+       on from. Dropping it is what stops the board jumping backwards while
+       everyone is setting up. */
+    /* Strictly older only. Two people editing at the same moment can land on
+       the same count, and there the newest arrival should win as it always
+       did — rejecting those left a joiner staring at an empty board. */
+    if (data.v !== undefined) {
+      if ((data.v || 0) < (target.v || 0)) return;
+      target.v = data.v || 0;
+    }
     target.tokens = data.tokens || [];
     target.arrows = data.arrows || [];
     target.marks = data.marks || [];
     target.labels = data.labels || [];
     if (data.name && data.name !== target.name) target.name = data.name;
+    if (data.base) target.base = data.base;
     target.updated = Date.now();
     dbPut('boards', target);
     if (target.id === S.boardId) {
@@ -2046,7 +2124,7 @@
         sendBeat();
         prune();
         S.beats = (S.beats || 0) + 1;
-        if (S.beats % 2 === 0) resync();
+        if (S.beats % 4 === 0) resync();      // every ~48s; it is only a repair
         /* Phones hand back sockets that look open but deliver nothing. If
            others are in the room we should hear their heartbeats; silence
            for this long means the connection is dead, so rebuild it. */
@@ -2196,21 +2274,32 @@
       if (!canEdit()) { denyEdit(); return; }
       var b = curBoard();
       if (!b) return;
-      var m = curMap(), h = m ? m.h : MAPW;
-      var drawn = b.arrows.length || b.marks.length || b.labels.length;
-      var moved = b.tokens.some(function (t, k) {
-        var sp = homeSpot(k, h);
-        return Math.abs(t.x - sp.x) > 1 || Math.abs(t.y - sp.y) > 1;
-      });
-      if (!drawn && !moved) { toast('Nothing to clear'); return; }
+      if (sameAsBase(b)) { toast('Already on the saved setup'); return; }
+      var base = baseOf(b);
       snapshot();
-      b.arrows = []; b.marks = []; b.labels = [];
-      b.tokens.forEach(function (t, k) {        // players back to their spots
-        var sp = homeSpot(k, h);
-        t.x = sp.x; t.y = sp.y;
+      b.arrows = clone(base.arrows);
+      b.marks = clone(base.marks);
+      b.labels = clone(base.labels);
+      b.tokens.forEach(function (t, k) {        // players back where they were saved
+        var o = base.tokens[k];
+        if (o) { t.x = o.x; t.y = o.y; }
       });
       render(); saveBoard();
-      toast((drawn ? 'Board cleared' : 'Players reset') + ' — undo is top right');
+      toast((b.base ? 'Back to the saved setup' : 'Board reset') + ' — undo is top right');
+    });
+
+    $('savebase').addEventListener('click', function () {
+      if (!canEdit()) { denyEdit(); return; }
+      var b = curBoard();
+      if (!b) { toast('Pick a map first'); return; }
+      b.base = {
+        tokens: b.tokens.map(function (t) {
+          return { id: t.id, n: t.n, team: t.team, x: t.x, y: t.y };
+        }),
+        arrows: clone(b.arrows), marks: clone(b.marks), labels: clone(b.labels)
+      };
+      saveBoard();
+      toast('Saved "' + b.name + '" — ✕ comes back here');
     });
 
     $('mapsel').addEventListener('change', function () {
@@ -2284,6 +2373,8 @@
     $('mok').addEventListener('click', function () { done('ok'); });
     $('mcancel').addEventListener('click', function () { done('cancel'); });
     $('minput').addEventListener('keydown', function (e) { if (e.key === 'Enter') done('ok'); });
+    var mback = document.querySelector('#modal .back');
+    if (mback) mback.addEventListener('pointerdown', function (e) { e.preventDefault(); });
 
     $('blankadd').addEventListener('change', function () { handleMapFiles(this.files); this.value = ''; });
     $('restore').addEventListener('change', function () {

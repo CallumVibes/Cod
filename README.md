@@ -23,16 +23,25 @@ The six tools along the bottom:
 | **Ping** | Tap anywhere to flash a marker with your name on everyone's screen for five seconds. Nothing is saved — it is just for pointing. |
 | **Arrow** | Draw a rotation with your finger. |
 | **Mark** | Drop an X. |
-| **Text** | Place a label. Drag labels in Move mode. |
+| **Text** | Tap where you want it, type, and tap Place. Drag labels in Move mode. |
 | **Erase** | Tap an arrow, mark or label to remove it. |
 
 Top right: undo, redo, **✕** to clear, **P** for hardpoints, and the arrows to
 flip the map round when you spawn the other side. The map turns; the writing on
 it stays the right way up. Each map remembers whether you had it flipped.
 
-**✕** wipes the arrows, marks and labels *and* puts the four players back on
-their starting spots, so you get a clean board in one tap. Undo brings it all
-back if you hit it by mistake.
+## Saving a setup
+
+Arrange the players and draw whatever you want as your starting point, then tap
+the flag (**⚑**). That becomes the setup's saved default.
+
+**✕** goes back to it — players, arrows, marks and labels, exactly as you saved
+them. Mid-game you can scribble all over the board and get your setup back in
+one tap. Undo brings the scribbles back if you hit it by mistake.
+
+If you have not saved anything yet, ✕ just clears the drawing and puts the four
+players back on their starting line. Saving again replaces the old default, and
+in a room the saved setup is shared with the team.
 
 The map always fills the screen and stays put — there is nothing to pan or
 zoom, so you cannot knock it out of place mid-game.
