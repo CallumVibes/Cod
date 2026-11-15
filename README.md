@@ -26,9 +26,13 @@ The six tools along the bottom:
 | **Text** | Tap where you want it, type, and tap Place. Drag labels in Move mode. |
 | **Erase** | Tap an arrow, mark or label to remove it. |
 
-Top right: undo, redo, **✕** to clear, **P** for hardpoints, and the arrows to
-flip the map round when you spawn the other side. The map turns; the writing on
-it stays the right way up. Each map remembers whether you had it flipped.
+Top right: undo, redo, **⚑** to save, **✕** to clear, **P** for hardpoints, and
+**↻** to turn the map.
+
+**↻** turns the board a quarter at a time. Two presses puts your spawn at the
+bottom; one press is for maps where the spawns are side to side. The map turns,
+the writing on it stays the right way up, and the whole room turns with you.
+Each map remembers how you left it.
 
 ## Saving a setup
 
@@ -90,6 +94,14 @@ Each map has its own setups, so switching map keeps everything in place.
 
 Setups you make on your own are yours and stay out of the room. Join a room
 and you see the room's; leave and your own come back.
+
+## Hill setups
+
+Menu → **Add hill setups** makes one setup per hill in that map's published
+rotation — *HP1 Laundry Room*, *HP2 Fans*, and so on — so you can flick through
+the rotation in order instead of making setups mid-match. They start on the
+normal line-up; where your players go is for you and your team to work out.
+Pressing it again adds nothing, and in a room everyone gets them.
 
 ## Hardpoints
 

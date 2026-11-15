@@ -224,13 +224,14 @@ var NostrLite = (function () {
     var self = this;
     return this.urls.map(function (u) {
       var r = self.socks[u], s = self._stat(u);
-      var state = !r ? 'idle'
+      var state = !r || !r.ws ? 'idle'
         : r.ws.readyState === 0 ? 'connecting'
         : r.ws.readyState === 1 ? 'connected'
         : 'closed';
       return {
         url: u, state: state, sent: s.sent, ok: s.ok,
-        rejected: s.rejected, recv: s.recv, err: s.err, authed: !!s.authed
+        rejected: s.rejected, recv: s.recv, err: s.err,
+        authed: !!s.authed, muted: !!s.muted
       };
     });
   };
@@ -365,9 +366,13 @@ var NostrLite = (function () {
     var msg = JSON.stringify(['EVENT', ev]), sent = 0, self = this;
     this.urls.forEach(function (u) {
       var r = self.socks[u];
-      if (r && r.ws.readyState === 1) {
-        try { r.ws.send(msg); self._stat(u).sent++; sent++; } catch (e) {}
-      }
+      if (!r || !r.ws || r.ws.readyState !== 1) return;
+      /* A relay that keeps refusing us is not going to start saying yes.
+         Stop spending the phone's signal on it and let the others carry
+         the room; we still listen to it. */
+      var st = self._stat(u);
+      if (st.sent >= 8 && st.rejected / st.sent > 0.6) { st.muted = true; return; }
+      try { r.ws.send(msg); st.sent++; sent++; } catch (e) {}
     });
     return sent;
   };
@@ -377,7 +382,7 @@ var NostrLite = (function () {
     var self = this;
     this.urls.forEach(function (u) {
       var r = self.socks[u];
-      if (r) { try { r.ws.close(); } catch (e) {} }
+      if (r && r.ws) { try { r.ws.close(); } catch (e) {} }
     });
     this.socks = {};
   };

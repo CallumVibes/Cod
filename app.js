@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '4.8';
+  var VERSION = '4.9';
   /* Write-friendly public relays. relay.nostr.band is a search aggregator and
      nostr.wine is paid, so neither accepts writes from a fresh key. */
   var DEFAULT_RELAYS = [
@@ -10,10 +10,14 @@
     'wss://nos.lol',
     'wss://relay.primal.net',
     'wss://nostr.mom',
-    'wss://offchain.pub'
+    'wss://nostr.oxtr.dev',
+    'wss://nostr-pub.wellorder.net'
   ];
-  /* Known not to take writes from a fresh key: paid, or search-only. */
-  var BAD_RELAYS = ['nostr.wine', 'relay.nostr.band', 'filter.nostr.wine', 'purplepag.es'];
+  /* Known not to take writes from a fresh key: paid, search-only, or gated
+     behind someone vouching for you — offchain.pub turns a new room key away
+     with "not in our web of trust". */
+  var BAD_RELAYS = ['nostr.wine', 'relay.nostr.band', 'filter.nostr.wine',
+                    'purplepag.es', 'offchain.pub'];
   var MAX_PX = 1600;         // longest edge kept for stored map images
   var SEND_MS = 350;         // live broadcast throttle while dragging
   var CHUNK = 14000;         // base64 chars per event — relays commonly cap at 32-64 KB
@@ -194,6 +198,7 @@
     hillNames: {},
     flips: {},
     hidden: {},
+    rots: {},
     lastSetup: {},
     showHills: true,
     hillEdit: false,
@@ -294,7 +299,7 @@
     if (S.mapId && S.boardId) S.lastSetup[S.mapId] = S.boardId;   // where this map was left
     dbPut('meta', {
       k: 'settings', mapId: S.mapId, boardId: S.boardId, nick: S.nick, showHills: S.showHills,
-      flips: S.flips, hidden: S.hidden, lastSetup: S.lastSetup,
+      flips: S.flips, rots: S.rots, hidden: S.hidden, lastSetup: S.lastSetup,
       room: S.room, relays: S.relays, colour: S.colour, clientId: S.clientId
     });
   }
@@ -398,28 +403,55 @@
     v.y = clamp(v.y, -v.h / 2, h - v.h / 2);
     return v;
   }
-  /* Flipping turns the board 180° so your spawn can sit at the bottom. The
-     map rotates; the writing on it does not. */
-  function isFlipped() {
-    var m = curMap();
-    return !!(m && S.flips[m.id]);
+  /* The board turns in quarter steps: twice puts your spawn at the bottom,
+     once stands a wide map up so it fills a phone held upright. The map
+     turns; the writing on it does not. */
+  function rotOf(m) {
+    m = m || curMap();
+    if (!m) return 0;
+    var r = S.rots[m.id];
+    if (r === undefined) r = S.flips[m.id] ? 2 : 0;    // older saves
+    return ((r % 4) + 4) % 4;
+  }
+  function isFlipped() { return rotOf() !== 0; }
+  function isSideways() { return rotOf() % 2 === 1; }
+
+  /* Turned inside the drawing rather than with CSS, so the picture still
+     fills the screen instead of hanging off the sides. */
+  function rotTransform() {
+    var r = rotOf(), h = mapH();
+    if (r === 1) return 'translate(' + h + ',0) rotate(90)';
+    if (r === 2) return 'translate(' + MAPW + ',' + h + ') rotate(180)';
+    if (r === 3) return 'translate(0,' + MAPW + ') rotate(270)';
+    return '';
   }
   function applyFlip() {
-    var on = isFlipped();
-    $('board').style.transform = on ? 'rotate(180deg)' : '';
+    var r = rotOf();
+    var g = $('layers');
+    if (g) {
+      if (r) g.setAttribute('transform', rotTransform());
+      else g.removeAttribute('transform');
+    }
+    $('board').style.transform = '';
     var btn = $('flipbtn');
-    if (btn) btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    if (btn) {
+      btn.setAttribute('aria-pressed', r ? 'true' : 'false');
+      btn.setAttribute('aria-label', 'Turn the map (' + (r * 90) + '°)');
+    }
   }
   /* Spin every label back the right way up, about the centre of its own box.
      Pivoting on the text anchor instead threw each one off by its own height. */
   function uprightTexts(root) {
-    if (!isFlipped() || !root) return;
+    var r = rotOf();
+    if (!r || !root) return;
+    var back = -r * 90;
     var ts = root.querySelectorAll('text');
     for (var i = 0; i < ts.length; i++) {
       try {
         var bb = ts[i].getBBox();
         ts[i].setAttribute('transform',
-          'rotate(180 ' + (bb.x + bb.width / 2) + ' ' + (bb.y + bb.height / 2) + ')');
+          'rotate(' + back + ' ' + (bb.x + bb.width / 2) + ' ' +
+          (bb.y + bb.height / 2) + ')');
       } catch (e) {}
     }
   }
@@ -437,15 +469,17 @@
     var h = mapH(), st = $('stage');
     var pad = 1.02;
     var sw = st.clientWidth || 360, sh = st.clientHeight || 480;
-    var mapAR = MAPW / h, stAR = sw / sh, w, hh;
-    if (mapAR > stAR) { w = MAPW * pad; hh = w / stAR; }
-    else { hh = h * pad; w = hh * stAR; }
-    setView({ x: (MAPW - w) / 2, y: (h - hh) / 2, w: w, h: hh });
+    var bw = isSideways() ? h : MAPW;        // what the turned map occupies
+    var bh = isSideways() ? MAPW : h;
+    var mapAR = bw / bh, stAR = sw / sh, w, hh;
+    if (mapAR > stAR) { w = bw * pad; hh = w / stAR; }
+    else { hh = bh * pad; w = hh * stAR; }
+    setView({ x: (bw - w) / 2, y: (bh - hh) / 2, w: w, h: hh });
   }
 
   function toSvg(cx, cy) {
     var svg = $('board');
-    var m = svg.getScreenCTM();
+    var m = ($('layers') || svg).getScreenCTM();
     if (!m) return { x: 0, y: 0 };
     var inv = m.inverse();
     if (window.DOMPoint) {
@@ -1625,7 +1659,8 @@
     var m = curMap();
     return JSON.stringify({
       v: 2, by: S.clientId, n: S.nick || 'Player', map: m ? m.name : '',
-      host: S.host || S.clientId, locked: !!S.locked, flip: isFlipped(),
+      host: S.host || S.clientId, locked: !!S.locked,
+      flip: rotOf() === 2, rot: rotOf(),
       active: S.boardId,
       setups: m ? boardsOf(m.id).map(function (b) { return { id: b.id, name: b.name }; }) : []
     });
@@ -2048,11 +2083,15 @@
     if (!curMap()) { S.pendingState = data; return; }
 
     var fm = curMap();
-    if (fm && typeof data.flip === 'boolean' && !!S.flips[fm.id] !== data.flip) {
-      S.flips[fm.id] = data.flip;
+    var wantRot = typeof data.rot === 'number' ? ((data.rot % 4) + 4) % 4
+                : typeof data.flip === 'boolean' ? (data.flip ? 2 : 0) : null;
+    if (fm && wantRot !== null && rotOf(fm) !== wantRot) {
+      S.rots[fm.id] = wantRot;
+      delete S.flips[fm.id];
       saveMeta();
+      fitView();
       render();
-      banner(data.flip ? 'Map flipped by the room' : 'Map turned back', 2500);
+      banner(wantRot ? 'Map turned by the room' : 'Map back to normal', 2500);
     }
     if (data.host) S.host = data.host;
     if (typeof data.locked === 'boolean' && data.locked !== S.locked) {
@@ -2170,11 +2209,20 @@
       return out;
     }
     if (!S.pool) { out.push('not connected to any relay'); return out; }
-    S.pool.report().forEach(function (r) {
+    var rep = S.pool.report();
+    var carrying = rep.filter(function (r) {
+      return r.state === 'connected' && !r.muted && (r.ok > 0 || r.sent === 0);
+    }).length;
+    out.push(carrying >= 2 ? 'sharing fine — ' + carrying + ' relays carrying the room'
+      : carrying === 1 ? 'working, but only one relay is carrying the room'
+      : 'nothing is carrying the room right now');
+    out.push('');
+    rep.forEach(function (r) {
       out.push('• ' + r.url.replace(/^wss?:\/\//, '') + (r.authed ? ' [authed]' : ''));
       out.push('    ' + r.state + ' — sent ' + r.sent + ', accepted ' + r.ok +
                ', rejected ' + r.rejected + ', received ' + r.recv);
       if (r.err) out.push('    says: ' + r.err);
+      if (r.muted) out.push('    (kept turning us away — skipped, the others carry the room)');
       if (r.state === 'connected' && r.sent > 0 && r.ok === 0 && r.rejected === 0 && !r.authed) {
         out.push('    (took events but never acknowledged any)');
       }
@@ -2410,15 +2458,46 @@
       setHillEdit(true);
     });
 
+    /* One setup per hill in this map's published rotation, so the team can
+       flick through the rotation in order instead of making them mid-match.
+       They start on the normal line-up — where the players go is yours to
+       decide, not something to guess at. */
+    $('hpsetups').addEventListener('click', function () {
+      var m = curMap();
+      if (!m) { toast('Pick a map first'); return; }
+      if (!canEdit()) { denyEdit(); return; }
+      var hills = rotationFor(m.name);
+      if (!hills.length) { toast('No published rotation for ' + m.name); return; }
+      var have = {};
+      boardsOf(m.id).forEach(function (b) { have[b.name.toLowerCase()] = 1; });
+      var made = 0, first = null;
+      hills.forEach(function (h, i) {
+        var name = 'HP' + (i + 1) + ' ' + h;
+        if (have[name.toLowerCase()]) return;
+        var nb = newBoard(m.id, name);
+        if (!first) first = nb;
+        made++;
+      });
+      if (!made) { toast('Already there — ' + hills.length + ' hills'); return; }
+      S.boards.forEach(function (b) { dbPut('boards', b); });
+      if (first) S.boardId = first.id;
+      refresh(); saveMeta();
+      if (S.room) { publishRoomState(); boardsOf(m.id).forEach(publishBoard); }
+      toast('Added ' + made + ' setup' + (made === 1 ? '' : 's') + ' for ' + m.name);
+    });
+
     $('flipbtn').addEventListener('click', function () {
       var m = curMap();
       if (!m) { toast('Pick a map first'); return; }
       if (!canEdit()) { denyEdit(); return; }
-      S.flips[m.id] = !S.flips[m.id];
+      var r = (rotOf(m) + 1) % 4;
+      S.rots[m.id] = r;
+      delete S.flips[m.id];               // the turn supersedes the old flip
+      fitView();                          // a sideways map needs refitting
       render();
       saveMeta();
       if (S.room) publishRoomState();     // everyone turns the board together
-      toast(S.flips[m.id] ? 'Map flipped' : 'Map back to normal');
+      toast(r === 0 ? 'Map back to normal' : 'Map turned ' + (r * 90) + '°');
     });
 
     $('wipe').addEventListener('click', function () {
@@ -2990,6 +3069,7 @@
         S.colour = st.colour || S.colour;
         if (st.showHills === false) S.showHills = false;
         if (st.flips) S.flips = st.flips;
+        if (st.rots) S.rots = st.rots;
         if (st.hidden) S.hidden = st.hidden;
         if (st.lastSetup) S.lastSetup = st.lastSetup;
         S.clientId = st.clientId || S.clientId;
