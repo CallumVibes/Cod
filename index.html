@@ -25,7 +25,7 @@ html,body{margin:0;padding:0;background:var(--bg);color:var(--text);
 font:16px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
 -webkit-text-size-adjust:100%}
 body{overflow:hidden;overscroll-behavior:none;-webkit-user-select:none;user-select:none;touch-action:manipulation}
-#app{display:flex;flex-direction:column;height:100vh;height:100dvh;
+#app{display:flex;flex-direction:column;height:100vh;height:100dvh;height:var(--appH,100dvh);
 padding:env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left)}
 
 button,select,input,textarea{font:inherit;color:var(--text);background:var(--surface2);
@@ -111,6 +111,7 @@ color:var(--dim);white-space:nowrap}
 position:absolute;left:0;right:0;top:0;z-index:5;background:rgba(13,15,19,.82);
 border-bottom:1px solid var(--line);pointer-events:none}
 #pings.show{display:flex}
+#pings{overflow-x:auto}
 #pings .kd{pointer-events:auto;height:32px;min-height:32px;padding:0 10px;font-size:11px;
 color:var(--dim);flex:none}
 #pings .kd[aria-pressed="true"]{background:var(--blue);border-color:var(--blue);color:#fff}
@@ -122,10 +123,16 @@ color:var(--dim);flex:none}
 position:absolute;left:0;right:0;top:0;z-index:5;background:rgba(13,15,19,.82);
 border-bottom:1px solid var(--line);pointer-events:none;overflow-x:auto}
 #acts.show{display:flex}
+#acts{overflow-x:auto}
 #acts button{pointer-events:auto;height:32px;min-height:32px;padding:0 9px;font-size:10.5px;
 color:var(--dim);flex:none;white-space:nowrap}
 #kinds .kd{pointer-events:auto;height:32px;min-height:32px;padding:0 5px;font-size:10px;
 color:var(--dim);gap:3px;flex:none}
+/* a folded cover screen is very narrow: tighten up rather than hide a chip */
+@media (max-width:385px){
+  #kinds{gap:3px;padding:7px 3px}
+  #kinds .kd{padding:0 4px;font-size:9.5px}
+}
 #kinds .kd.mate{border-color:#3b82f6;color:#60a5fa}
 #kinds .kd.mate[aria-pressed="true"]{background:#3b82f6;border-color:#3b82f6;color:#fff}
 #kinds .kd.enemy{border-color:#ef4444;color:#ef4444}

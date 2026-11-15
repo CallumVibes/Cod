@@ -148,7 +148,8 @@ somewhere safe, or use **Restore** on a new phone to pick up where you left off.
 ## If something is wrong
 
 - **Stuck on an old version?** Menu → **Force update**. The version is shown
-  under the title in the menu.
+  under the title in the menu. Everyone needs to be on the same one — phones on
+  an older build cannot see newer rooms.
 - **Room not working?** Join the room, open the menu, scroll to *Diagnostics*
   and tap **Copy report**. It says which relays connected and what they said.
 - **Someone seeing something you have deleted?** It should sort itself out

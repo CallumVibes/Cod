@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '6.1';
+  var VERSION = '6.2';
   /* Write-friendly public relays. relay.nostr.band is a search aggregator and
      nostr.wine is paid, so neither accepts writes from a fresh key. */
   var DEFAULT_RELAYS = [
@@ -667,6 +667,22 @@
   function onMap(p) {
     return { x: clamp(p.x, 0, MAPW), y: clamp(p.y, 0, mapH()) };
   }
+  /* Measure the screen rather than trusting the browser's idea of it. Some
+     browsers report the wrong height for a moment after a reload, which used
+     to leave the tools below the bottom edge with no way back short of
+     closing the app. */
+  function sizeShell() {
+    var el = document.activeElement;
+    if (el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return;   // keyboard is up
+    var vv = window.visualViewport;
+    var h = Math.round((vv && vv.height) || window.innerHeight || 0);
+    if (h < 240) return;                       // nonsense reading, leave it alone
+    var had = parseInt(document.documentElement.style.getPropertyValue('--appH'), 10) || 0;
+    if (Math.abs(had - h) < 2) return;
+    document.documentElement.style.setProperty('--appH', h + 'px');
+    if (S.mapId) { fitView(); render(); }
+  }
+
   function fitView() {
     var h = mapH(), st = $('stage');
     var pad = 1.02;
@@ -3238,7 +3254,17 @@
       ro.observe($('stage'));
     }
 
+    sizeShell();
+    [60, 300, 900, 2000].forEach(function (ms) { setTimeout(sizeShell, ms); });
+    window.addEventListener('resize', sizeShell);
+    window.addEventListener('orientationchange', function () { setTimeout(sizeShell, 120); });
+    window.addEventListener('pageshow', function () { setTimeout(sizeShell, 60); });
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', sizeShell);
+    }
+
     document.addEventListener('visibilitychange', function () {
+      if (!document.hidden) setTimeout(sizeShell, 80);
       if (document.hidden || !S.pool) return;
       ptrs = {};                 // any gesture is long over by now
       gest = null;
