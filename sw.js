@@ -1,4 +1,4 @@
-var CACHE = 'stratboard-v35';
+var CACHE = 'stratboard-v40';
 var ASSETS = [
   './',
   './index.html',
@@ -16,6 +16,7 @@ var ASSETS = [
   './maps/munition.jpg',
   './maps/reactor.jpg',
   './maps/rooftops.jpg',
+  './maps/sentry.jpg',
   './maps/silkworm.jpg'
 ];
 

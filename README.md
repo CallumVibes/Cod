@@ -19,17 +19,23 @@ The six tools along the bottom:
 
 | Tool | What it does |
 | --- | --- |
-| **Move** | Drag players around. Tap one to rename it, drag the map to pan. Hold the map to ping. |
+| **Move** | Drag players around. Tap one to rename it. Hold the map to ping. |
 | **Ping** | Tap anywhere to flash a marker with your name on everyone's screen for five seconds. Nothing is saved — it is just for pointing. |
 | **Arrow** | Draw a rotation with your finger. |
 | **Mark** | Drop an X. |
 | **Text** | Place a label. Drag labels in Move mode. |
 | **Erase** | Tap an arrow, mark or label to remove it. |
 
-Top right: undo, redo, fit the map to the screen, clear the drawing, **P** for
-hardpoints, and the arrows to flip the map round when you spawn the other side.
-The map turns; the writing on it stays the right way up. Each map remembers
-whether you had it flipped.
+Top right: undo, redo, **✕** to clear, **P** for hardpoints, and the arrows to
+flip the map round when you spawn the other side. The map turns; the writing on
+it stays the right way up. Each map remembers whether you had it flipped.
+
+**✕** wipes the arrows, marks and labels *and* puts the four players back on
+their starting spots, so you get a clean board in one tap. Undo brings it all
+back if you hit it by mistake.
+
+The map always fills the screen and stays put — there is nothing to pan or
+zoom, so you cannot knock it out of place mid-game.
 
 ## Who can change things
 
@@ -90,6 +96,12 @@ somewhere safe, or use **Restore** on a new phone to pick up where you left off.
   under the title in the menu.
 - **Room not working?** Join the room, open the menu, scroll to *Diagnostics*
   and tap **Copy report**. It says which relays connected and what they said.
+- **Someone seeing something you have deleted?** It should sort itself out
+  within about half a minute — every phone re-asks for the current board on a
+  timer, so a message lost on a bad connection gets picked up again.
+- **App broken after an update?** Menu → **Reset the app**, which clears
+  everything the browser has stored and starts fresh. Back up first if you
+  have setups worth keeping.
 - **Nothing saves?** Everything lives on your own phone. Clearing the site's
   browser data wipes your setups.
 

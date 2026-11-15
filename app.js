@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '4.1';
+  var VERSION = '4.5';
   /* Write-friendly public relays. relay.nostr.band is a search aggregator and
      nostr.wine is paid, so neither accepts writes from a fresh key. */
   var DEFAULT_RELAYS = [
@@ -179,6 +179,8 @@
     wantTimer: null,
     rxTimer: null,
     relayFallback: null,
+    lastRx: 0,
+    seenBoard: {},
     notices: [],
     hills: {},
     hillNames: {},
@@ -214,16 +216,23 @@
     return shown.length ? shown : S.maps;       // never leave the picker empty
   }
 
+  /* Where the players sit on a fresh setup — the spots the clear button
+     puts them back to. */
+  function homeSpot(k, h) {
+    return { x: MAPW * (0.32 + k * 0.12), y: (h || MAPW) * 0.82 };
+  }
+
   function newBoard(mapId, name) {
     var h = MAPW, m = null, i;
     for (i = 0; i < S.maps.length; i++) if (S.maps[i].id === mapId) m = S.maps[i];
     if (m) h = m.h;
-    var cy = h * 0.82, names = ['AR', 'Sub', 'Flex', 'Anch'];
+    var names = ['AR', 'Sub', 'Flex', 'Anch'];
     var b = {
       id: uid(), mapId: mapId, room: S.room || '',
       name: name || ('Setup ' + (boardsOf(mapId).length + 1)),
       tokens: names.map(function (n, k) {
-        return { id: uid(), n: n, x: MAPW * (0.32 + k * 0.12), y: cy, team: 'b' };
+        var sp = homeSpot(k, h);
+        return { id: uid(), n: n, x: sp.x, y: sp.y, team: 'b' };
       }),
       arrows: [], marks: [], labels: [], updated: Date.now()
     };
@@ -235,6 +244,9 @@
   function saveBoard(broadcast) {
     var b = curBoard();
     if (!b) return;
+    /* We have just changed this board ourselves, so an incoming copy that
+       matches an earlier one is news again, not a repeat. */
+    delete S.seenBoard[b.id];
     b.updated = Date.now();
     dbPut('boards', b);
     if (broadcast !== false) queueSend();
@@ -621,7 +633,7 @@
 
   /* ---------- gestures ---------- */
   var ptrs = {};
-  var gest = null;   // {type:'pan'|'drag'|'draw'|'draglabel'|'none', ...}
+  var gest = null;   // {type:'hold'|'drag'|'draw'|'draglabel'|'none', ...}
 
   function stageDown(e) {
     var m = curMap();
@@ -698,12 +710,12 @@
         snapshot();
         gest = { type: 'draglabel', id: hitEl.getAttribute('data-id'), moved: false };
       } else {
-        gest = {
-          type: 'pan', c0: { x: e.clientX, y: e.clientY }, grab: p, moved: false
-        };
+        /* The board stays put. Dragging it about served no purpose once zoom
+           went, and it was easy to shove the map off by accident. */
+        gest = { type: 'hold', c0: { x: e.clientX, y: e.clientY }, moved: false };
         clearTimeout(S.holdTimer);
         S.holdTimer = setTimeout(function () {
-          if (gest && gest.type === 'pan' && !gest.moved) {
+          if (gest && gest.type === 'hold' && !gest.moved) {
             gest = { type: 'none' };
             sendPing(p);
           }
@@ -752,16 +764,11 @@
     ptrs[e.pointerId] = { x: e.clientX, y: e.clientY };
     if (!gest) return;
 
-    if (gest.type === 'pan') {
+    if (gest.type === 'hold') {
       if (!gest.moved && Math.abs(e.clientX - gest.c0.x) + Math.abs(e.clientY - gest.c0.y) > 8) {
         gest.moved = true;
         clearTimeout(S.holdTimer);
       }
-      var now = toSvg(e.clientX, e.clientY);
-      setView({
-        x: S.view.x + (gest.grab.x - now.x), y: S.view.y + (gest.grab.y - now.y),
-        w: S.view.w, h: S.view.h
-      });
       return;
     }
 
@@ -1555,6 +1562,16 @@
     }
   }
 
+  /* Relays keep only the newest copy of the board and of the room state, so
+     re-asking for them is cheap and repairs anything a flaky phone missed.
+     Without this a single dropped message leaves a device stale for good. */
+  function resync() {
+    if (!S.pool || !S.room || !S.roomPub) return;
+    S.pool.sub('state', [{ kinds: [30078], authors: [S.roomPub], '#d': [roomTag()], limit: 1 }]);
+    subBoards();
+    subHills();
+  }
+
   function sendBeat() {
     if (!S.pool || !S.roomSk) return;
     var ev = {
@@ -1636,6 +1653,7 @@
 
   function onEvent(ev) {
     if (!S.roomPub || ev.pubkey !== S.roomPub) return;
+    S.lastRx = Date.now();
 
     /* map transfer: chunks are raw base64, not JSON, so handle them first */
     if (ev.kind === 30078) {
@@ -1719,6 +1737,8 @@
         try { bd = JSON.parse(ev.content); } catch (e) { return; }
         if (!bd || bd.by === S.clientId) return;
         if (S.locked && isHost() && bd.by !== S.host) return;
+        if (S.seenBoard[bd.id] === ev.content) return;   // a repeat of what we show
+        S.seenBoard[bd.id] = ev.content;
         if (gest && bd.id === S.boardId &&
             (gest.type === 'drag' || gest.type === 'draw' || gest.type === 'draglabel')) {
           S.pendingRemote = bd;      // never yank the board out from under a finger
@@ -2021,7 +2041,20 @@
         joinRoom(S.room, true);
       }, 20000);
 
-      S.beat = setInterval(function () { sendBeat(); prune(); }, BEAT_MS);
+      S.lastRx = Date.now();
+      S.beat = setInterval(function () {
+        sendBeat();
+        prune();
+        S.beats = (S.beats || 0) + 1;
+        if (S.beats % 2 === 0) resync();
+        /* Phones hand back sockets that look open but deliver nothing. If
+           others are in the room we should hear their heartbeats; silence
+           for this long means the connection is dead, so rebuild it. */
+        if (S.room && Object.keys(S.members).length &&
+            Date.now() - S.lastRx > 45000) {
+          joinRoom(S.room, true);
+        }
+      }, BEAT_MS);
       setTimeout(sendBeat, 900);
 
       if (curMap()) {
@@ -2106,19 +2139,6 @@
     stage.addEventListener('pointermove', stageMove);
     stage.addEventListener('pointerup', stageUp);
     stage.addEventListener('pointercancel', stageUp);
-    stage.addEventListener('wheel', function (e) {
-      e.preventDefault();
-      var f = e.deltaY > 0 ? 1.12 : 0.89;
-      var w = clamp(S.view.w * f, 110, MAPW * 2.2);
-      var hh = w * (S.view.h / S.view.w);
-      var p = toSvg(e.clientX, e.clientY);
-      setView({ x: S.view.x, y: S.view.y, w: w, h: hh });
-      var after2 = toSvg(e.clientX, e.clientY);
-      setView({
-        x: S.view.x + (p.x - after2.x), y: S.view.y + (p.y - after2.y), w: w, h: hh
-      });
-      render();
-    }, { passive: false });
 
     var tb = document.querySelectorAll('#tools button');
     for (var i = 0; i < tb.length; i++) {
@@ -2138,7 +2158,6 @@
 
     $('undo').addEventListener('click', doUndo);
     $('redo').addEventListener('click', doRedo);
-    $('fit').addEventListener('click', function () { fitView(); render(); });
     $('hillsbtn').addEventListener('click', function () {
       if (S.hillEdit) { setHillEdit(false); toast('Hardpoints saved'); return; }
       var m = curMap();
@@ -2177,14 +2196,21 @@
       if (!canEdit()) { denyEdit(); return; }
       var b = curBoard();
       if (!b) return;
-      if (!b.arrows.length && !b.marks.length && !b.labels.length) {
-        toast('Nothing drawn to clear');
-        return;
-      }
+      var m = curMap(), h = m ? m.h : MAPW;
+      var drawn = b.arrows.length || b.marks.length || b.labels.length;
+      var moved = b.tokens.some(function (t, k) {
+        var sp = homeSpot(k, h);
+        return Math.abs(t.x - sp.x) > 1 || Math.abs(t.y - sp.y) > 1;
+      });
+      if (!drawn && !moved) { toast('Nothing to clear'); return; }
       snapshot();
       b.arrows = []; b.marks = []; b.labels = [];
+      b.tokens.forEach(function (t, k) {        // players back to their spots
+        var sp = homeSpot(k, h);
+        t.x = sp.x; t.y = sp.y;
+      });
       render(); saveBoard();
-      toast('Drawing cleared — undo is top right');
+      toast((drawn ? 'Board cleared' : 'Players reset') + ' — undo is top right');
     });
 
     $('mapsel').addEventListener('change', function () {
@@ -2403,6 +2429,22 @@
     });
 
 
+    $('resetapp').addEventListener('click', function () {
+      ask({
+        title: 'Reset the app?',
+        body: 'This clears everything on this phone — setups, hardpoints and ' +
+              'your name — and reinstalls the app fresh. Back up first if you ' +
+              'want to keep your setups.',
+        okText: 'Reset', cancelText: 'Cancel'
+      }).then(function (r) {
+        if (r.action !== 'ok') return;
+        toast('Resetting…');
+        wipeEverything().then(function () {
+          setTimeout(function () { location.replace(location.pathname); }, 300);
+        });
+      });
+    });
+
     /* Escape hatch: wipe the caches and the worker, then reload from the
        network. A phone stuck on an old build has no other way back. */
     $('forceupdate').addEventListener('click', function () {
@@ -2446,10 +2488,7 @@
     function reflow() {
       var st = $('stage');
       if (!st.clientWidth || !st.clientHeight) return;
-      var cur = S.view;
-      var cx = cur.x + cur.w / 2, cy = cur.y + cur.h / 2;
-      var h = cur.w * (st.clientHeight / st.clientWidth);
-      setView({ x: cx - cur.w / 2, y: cy - h / 2, w: cur.w, h: h });
+      fitView();
       render();
     }
     window.addEventListener('resize', reflow);
@@ -2464,7 +2503,13 @@
     }
 
     document.addEventListener('visibilitychange', function () {
-      if (!document.hidden && S.pool) { sendBeat(); prune(); }
+      if (document.hidden || !S.pool) return;
+      ptrs = {};                 // any gesture is long over by now
+      gest = null;
+      sendBeat();
+      prune();
+      resync();
+      if (S.room && Date.now() - S.lastRx > 45000) joinRoom(S.room, true);
     });
   }
 
@@ -2504,6 +2549,46 @@
       });
     });
   }
+
+    /* The big hammer: everything a browser's "clear site data" would remove,
+     so a stuck phone can be fixed without explaining browser settings. */
+  function wipeEverything() {
+    function guard(p, ms) {
+      return Promise.race([
+        p.catch(function () {}),
+        new Promise(function (res) { setTimeout(res, ms || 3000); })
+      ]);
+    }
+    var jobs = [];
+
+    if (window.caches && caches.keys) {
+      jobs.push(guard(caches.keys().then(function (keys) {
+        return Promise.all(keys.map(function (k) { return caches.delete(k); }));
+      })));
+    }
+    if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
+      jobs.push(guard(navigator.serviceWorker.getRegistrations().then(function (regs) {
+        return Promise.all(regs.map(function (r) { return r.unregister(); }));
+      })));
+    }
+    try { localStorage.clear(); } catch (e) {}
+    try { sessionStorage.clear(); } catch (e) {}
+
+    /* The database will not drop while this page still holds it open, and
+       deleteDatabase simply blocks rather than failing, so close first and
+       never wait on it indefinitely. */
+    jobs.push(guard(new Promise(function (res) {
+      try { if (DB) { DB.close(); DB = null; } } catch (e) {}
+      var rq;
+      try { rq = indexedDB.deleteDatabase('stratboard'); } catch (e) { res(); return; }
+      rq.onsuccess = function () { res(); };
+      rq.onerror = function () { res(); };
+      rq.onblocked = function () { res(); };
+    }), 4000));
+
+    return Promise.all(jobs);
+  }
+
 
   /* ---------- entry screen ---------- */
   function showStart() { $('start').classList.add('open'); }
@@ -2547,6 +2632,19 @@
 
   /* ---------- boot ---------- */
   function boot() {
+    /* Runs before anything touches storage, so this still works when the app
+       is too broken to start — the link is the fix you can send someone. */
+    if (/[?&]reset=1/.test(location.search)) {
+      document.body.innerHTML =
+        '<div style="display:flex;height:100vh;align-items:center;justify-content:center;' +
+        'font:16px -apple-system,Roboto,sans-serif;color:#99a1b0;padding:24px;text-align:center">' +
+        'Resetting Strat Board…</div>';
+      wipeEverything().then(function () {
+        setTimeout(function () { location.replace(location.pathname); }, 400);
+      });
+      return;
+    }
+
     ensureMarkers();
     wire();
     wireInstall();
@@ -2698,6 +2796,9 @@
         setTimeout(function () { joinRoom(st.room, true); }, 350);
       }
     }).catch(function (err) {
+      /* If the database will not open, nothing else will work either — point
+         at the one button that fixes it rather than failing silently. */
+      banner('Storage problem. Open the menu and tap "Reset the app".', 20000);
       toast('Storage unavailable — nothing will save');
       fitView(); render();
     });
@@ -2707,10 +2808,17 @@
     }
 
     setInterval(function () {
-      if (S.pendingRemote && (!gest || gest.type === 'none')) {
-        applyBoard(S.pendingRemote);
-        S.pendingRemote = null;
-      }
+      if (!S.pendingRemote) return;
+      /* Updates are held while a finger is down so the board is not yanked
+         mid-drag. A missed pointerup used to leave that hold on for good,
+         freezing the board on whatever it last showed — so the real test is
+         whether anything is actually touching the screen. */
+      var touching = Object.keys(ptrs).length > 0;
+      if (touching && gest &&
+          (gest.type === 'drag' || gest.type === 'draw' || gest.type === 'draglabel')) return;
+      if (!touching) gest = null;
+      applyBoard(S.pendingRemote);
+      S.pendingRemote = null;
     }, 400);
   }
 

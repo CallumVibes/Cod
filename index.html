@@ -190,7 +190,6 @@ padding:10px 14px;font-size:13.5px;box-shadow:0 6px 20px rgba(0,0,0,.45);text-al
     <div id="float">
       <button id="undo" aria-label="Undo">&#8630;</button>
       <button id="redo" aria-label="Redo">&#8631;</button>
-      <button id="fit" aria-label="Fit map to screen">&#9744;</button>
       <button id="wipe" aria-label="Clear drawing">&#10005;</button>
       <button id="hillsbtn" aria-label="Show hardpoints" aria-pressed="false">P</button>
       <button id="flipbtn" aria-label="Flip the map around" aria-pressed="false">&#8645;</button>
@@ -299,7 +298,10 @@ padding:10px 14px;font-size:13.5px;box-shadow:0 6px 20px rgba(0,0,0,.45);text-al
       </div>
       <div class="row">
         <button id="forceupdate">Force update</button>
+        <button id="resetapp" class="danger">Reset the app</button>
       </div>
+      <p class="hint">Force update fetches the newest version and keeps your setups.
+      Reset clears everything on this phone and starts fresh — use it if the app is stuck.</p>
       <div class="row">
         <button id="closemenu" class="pri">Done</button>
       </div>
